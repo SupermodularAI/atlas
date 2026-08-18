@@ -4,7 +4,6 @@
 package descriptor
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -58,9 +57,13 @@ func (s Source) IsExcluded(name string) bool {
 	return false
 }
 
-// matchGlob supports the "**" suffix that path.Match does not, so a pattern
-// like "skills/finance-*/**" matches at any depth beneath the prefix. A bare
-// or mid-pattern "**" is not supported — validate() rejects those forms at
+// matchGlob matches pattern against name or any ancestor directory of name,
+// so a pattern naming a directory (with or without a trailing "/**")
+// excludes everything beneath it — "skills/finance-*" and
+// "skills/finance-*/**" both withhold "skills/finance-ops/a/b/SKILL.md". A
+// trailing "/**" is accepted but redundant: the ancestor walk already
+// crosses "/", which path.Match on its own never does. A bare or
+// mid-pattern "**" is not supported — validate() rejects those forms at
 // load time, so matchGlob never has to interpret one.
 //
 // matchGlob fails closed: validate() guarantees every pattern reaching here
@@ -70,43 +73,36 @@ func (s Source) IsExcluded(name string) bool {
 // have been shown is a visible, correctable error; publishing one that
 // should have been withheld is not.
 func matchGlob(pattern, name string) bool {
-	if strings.HasSuffix(pattern, "/**") {
-		prefix := strings.TrimSuffix(pattern, "/**")
-		// Match the prefix itself against each ancestor path of name.
-		for p := name; p != "." && p != "/" && p != ""; p = path.Dir(p) {
-			ok, err := path.Match(prefix, p)
-			if err != nil {
-				return true
-			}
-			if ok {
-				return true
-			}
+	prefix := strings.TrimSuffix(pattern, "/**")
+	for p := name; p != "." && p != "/" && p != ""; p = path.Dir(p) {
+		ok, err := path.Match(prefix, p)
+		if err != nil {
+			return true
 		}
-		return false
+		if ok {
+			return true
+		}
 	}
-	ok, err := path.Match(pattern, name)
-	if err != nil {
-		return true
-	}
-	return ok
+	return false
 }
 
 // checkExcludePattern reports whether pat is a well-formed exclude glob for
 // a repo-kind source: it must compile as a path.Match pattern (checked on
-// the string matchGlob actually passes to path.Match — the trimmed prefix
-// for a "/**"-suffixed pattern, the whole pattern otherwise), and it must
-// not contain a non-trailing "**", which path.Match would silently treat as
-// an ordinary single-segment "*" rather than the recursive match it looks
-// like.
+// the string matchGlob actually passes to path.Match — pat with any
+// trailing "/**" trimmed, since that suffix is accepted but not itself
+// matched), and it must not contain a non-trailing "**", which path.Match
+// would silently treat as an ordinary single-segment "*" rather than the
+// recursive match it looks like.
 func checkExcludePattern(pat string) error {
-	matchable := pat
-	if strings.HasSuffix(pat, "/**") {
-		matchable = strings.TrimSuffix(pat, "/**")
-	}
+	matchable := strings.TrimSuffix(pat, "/**")
 	if strings.Contains(matchable, "**") {
 		return fmt.Errorf("%q: \"**\" is only supported as a trailing \"/**\" suffix", pat)
 	}
-	if _, err := path.Match(matchable, matchable); err != nil && errors.Is(err, path.ErrBadPattern) {
+	// Self-match: matching a pattern against itself as the name forces
+	// path.Match to scan the whole pattern for well-formedness, even past a
+	// literal segment that would otherwise short-circuit the scan on a
+	// mismatch before reaching a malformed character class further along.
+	if _, err := path.Match(matchable, matchable); err != nil {
 		return fmt.Errorf("%q: %w", pat, err)
 	}
 	return nil

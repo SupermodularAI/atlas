@@ -177,6 +177,58 @@ sources:
 	}
 }
 
+func TestRepoSourceGlobExcludeWithoutSuffixStillExcludesBeneath(t *testing.T) {
+	// An author writing "skills/finance-*" (no "/**" suffix) means "withhold
+	// the finance skills" — the same intent as the "/**" form. Silently
+	// excluding nothing beneath the directory would be the same fail-open
+	// trap as the main finding, reached via an authoring gap instead of a
+	// code defect.
+	d, err := Load(write(t, `
+company: acme
+sources:
+  - kind: repo
+    name: r
+    url: https://example.test/r
+    exclude:
+      - "skills/finance-*"
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	s := d.Sources[0]
+	if !s.IsExcluded("skills/finance-ops/SKILL.md") {
+		t.Error("finance-ops path should be excluded even without a /** suffix")
+	}
+	if !s.IsExcluded("skills/finance-ops/a/b/SKILL.md") {
+		t.Error("deep finance-ops path should be excluded even without a /** suffix")
+	}
+	if s.IsExcluded("skills/code-review/SKILL.md") {
+		t.Error("code-review path should not be excluded")
+	}
+}
+
+func TestRejectsMalformedExcludeGlobAfterLiteralPrefix(t *testing.T) {
+	// A malformed character class positioned after a literal prefix segment
+	// that would otherwise fail the match early: this is the case where a
+	// naive check (e.g. path.Match(pat, "") ) could short-circuit on the
+	// name mismatch before ever scanning the unterminated bracket. Self-
+	// matching the pattern against itself forces the whole pattern to be
+	// scanned for well-formedness.
+	_, err := Load(write(t, `
+company: acme
+sources:
+  - kind: repo
+    name: r
+    url: https://example.test/r
+    acknowledgeUnclassified: true
+    exclude:
+      - "zzz/[bad"
+`))
+	if err == nil {
+		t.Fatal("expected error for malformed exclude glob after literal prefix, got nil")
+	}
+}
+
 func TestRepoSourceGlobExcludeDeeperPath(t *testing.T) {
 	// This is the case that discriminates the ancestor-walk implementation
 	// from a naive single path.Match call: path.Match requires an exact
