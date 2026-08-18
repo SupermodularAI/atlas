@@ -100,9 +100,17 @@ func run(descPath, outDir string, strict bool) error {
 	}
 
 	if strict {
-		degraded := a.Summary.Sources["unavailable"] + a.Summary.Packages["restricted"] + len(a.Warnings)
-		if degraded > 0 {
-			return fmt.Errorf("--strict: %d source(s)/package(s) degraded or warned", degraded)
+		unavailable := a.Summary.Sources["unavailable"]
+		restricted := a.Summary.Packages["restricted"]
+		warned := len(a.Warnings)
+		if unavailable+restricted+warned > 0 {
+			// Named per condition, never collapsed into one integer: §7 requires
+			// the two degradation levels stay distinguishable, and a warning is a
+			// third, different thing (an ineffective control, not missing
+			// coverage). An operator fixing this needs to know which counter is
+			// non-zero, not just that "something" was non-zero.
+			return fmt.Errorf("--strict: %d unavailable source(s), %d restricted package(s), %d warning(s)",
+				unavailable, restricted, warned)
 		}
 	}
 	return nil
