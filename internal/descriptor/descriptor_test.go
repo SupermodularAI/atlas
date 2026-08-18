@@ -229,6 +229,49 @@ sources:
 	}
 }
 
+func TestRejectsExcludePatternWithNoMatchableContent(t *testing.T) {
+	// Each of these is well-formed (compiles as a path.Match pattern) and
+	// distinct from the rejected "**" form, yet after trimming a trailing
+	// "/**" leaves nothing that can match a real path — so it is accepted
+	// at load and then silently excludes nothing. checkExcludePattern must
+	// reject these on the "no matchable content" ground, not by blacklist.
+	for _, pat := range []string{"/**", "", "/", "."} {
+		t.Run(pat, func(t *testing.T) {
+			_, err := Load(write(t, `
+company: acme
+sources:
+  - kind: repo
+    name: r
+    url: https://example.test/r
+    acknowledgeUnclassified: true
+    exclude:
+      - "`+pat+`"
+`))
+			if err == nil {
+				t.Fatalf("pattern %q: expected error for no matchable content, got nil", pat)
+			}
+		})
+	}
+}
+
+func TestMatchGlobFailsClosedOnUncompilablePattern(t *testing.T) {
+	// validate() guarantees every pattern reaching matchGlob compiles, so
+	// this path is unreachable through Load. It is still reachable by any
+	// caller that constructs a Source directly (bypassing Load), which is
+	// exactly why matchGlob has a fail-closed backstop for a path.Match
+	// error: construct that case directly and confirm the backstop excludes
+	// rather than admits.
+	s := Source{
+		Kind:    KindRepo,
+		Name:    "r",
+		URL:     "https://example.test/r",
+		Exclude: []string{"[bad"},
+	}
+	if !s.IsExcluded("anything") {
+		t.Error("uncompilable pattern should fail closed (excluded = true), not admit")
+	}
+}
+
 func TestRepoSourceGlobExcludeDeeperPath(t *testing.T) {
 	// This is the case that discriminates the ancestor-walk implementation
 	// from a naive single path.Match call: path.Match requires an exact

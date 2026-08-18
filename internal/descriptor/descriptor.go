@@ -86,17 +86,34 @@ func matchGlob(pattern, name string) bool {
 	return false
 }
 
-// checkExcludePattern reports whether pat is a well-formed exclude glob for
-// a repo-kind source: it must compile as a path.Match pattern (checked on
-// the string matchGlob actually passes to path.Match — pat with any
-// trailing "/**" trimmed, since that suffix is accepted but not itself
-// matched), and it must not contain a non-trailing "**", which path.Match
-// would silently treat as an ordinary single-segment "*" rather than the
-// recursive match it looks like.
+// checkExcludePattern reports whether pat is a usable exclude glob for a
+// repo-kind source. Three conditions must hold, checked on the string
+// matchGlob actually passes to path.Match — pat with any trailing "/**"
+// trimmed, since that suffix is accepted but not itself matched:
+//   - it must not contain a non-trailing "**", which path.Match would
+//     silently treat as an ordinary single-segment "*" rather than the
+//     recursive match it looks like;
+//   - it must have matchable content: "", ".", and "/" all compile as
+//     path.Match patterns but never match a real harvested path, so left
+//     unchecked they are accepted at load and then silently exclude
+//     nothing;
+//   - it must compile as a path.Match pattern.
 func checkExcludePattern(pat string) error {
 	matchable := strings.TrimSuffix(pat, "/**")
 	if strings.Contains(matchable, "**") {
 		return fmt.Errorf("%q: \"**\" is only supported as a trailing \"/**\" suffix", pat)
+	}
+	// A pattern can be well-formed and still have no matchable content: once
+	// a trailing "/**" is trimmed, "", ".", and "/" are all legal path.Match
+	// patterns that never match a real harvested path, so the pattern is
+	// accepted at load and then silently excludes nothing. This is a bounded
+	// check for patterns with no content at all — it does not (and cannot)
+	// catch every pattern that happens to match nothing, e.g. a typo'd but
+	// well-formed "skils/*" is legal, matchable, and simply wrong; that is
+	// undetectable at load time and belongs to the visibility work that
+	// reports zero-match excludes after a tree is walked, not here.
+	if matchable == "" || matchable == "." || matchable == "/" {
+		return fmt.Errorf("%q: no matchable content", pat)
 	}
 	// Self-match: matching a pattern against itself as the name forces
 	// path.Match to scan the whole pattern for well-formedness, even past a
