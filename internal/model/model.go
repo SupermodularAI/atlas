@@ -48,9 +48,13 @@ type Primitive struct {
 
 // Install holds the commands rendered for a package. Both are derived from
 // manifest fields; a missing command is correct, a guessed one is a defect.
+// Both fields carry omitempty: unlike Primitives, a zero value here (a
+// command that was not constructed — no sourceBase, or a repo source with no
+// install path) carries no meaning, so it must be omitted rather than
+// emitted as "".
 type Install struct {
-	MarketplaceAdd string `json:"marketplaceAdd"`
-	Install        string `json:"install"`
+	MarketplaceAdd string `json:"marketplaceAdd,omitempty"`
+	Install        string `json:"install,omitempty"`
 }
 
 // Package is one package (or, for a repo source, the implicit whole-repo
@@ -91,6 +95,17 @@ type Collision struct {
 	Sources []string `json:"sources"`
 }
 
+// Warning records a signal that does not block generation but should be
+// visible — e.g. a descriptor exclude pattern that matched nothing. Like
+// Collisions, it carries no omitempty and is populated as [] rather than
+// left nil, so a consumer can distinguish "no warnings" from "this producer
+// does not populate this field".
+type Warning struct {
+	Kind   string `json:"kind"` // e.g. "unused-exclude"
+	Source string `json:"source"`
+	Detail string `json:"detail"`
+}
+
 // Summary is the counts line, also printed to stderr by the CLI.
 type Summary struct {
 	Sources  map[string]int `json:"sources"`
@@ -106,6 +121,7 @@ type Atlas struct {
 	Packages      []Package   `json:"packages"`
 	Collisions    []Collision `json:"collisions"`
 	Summary       Summary     `json:"summary"`
+	Warnings      []Warning   `json:"warnings"`
 }
 
 // MarshalJSONIndent renders atlas.json in its on-disk form.
