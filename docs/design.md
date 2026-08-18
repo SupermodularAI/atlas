@@ -283,6 +283,10 @@ Atlas is public, so this file is a contract others build on. It carries
   "collisions": [
     { "kind": "package-name", "name": "smos-infra", "sources": ["smos", "core"] }
   ],
+  "warnings": [
+    { "kind": "unused-exclude", "source": "other",
+      "detail": "exclude pattern \"skils/*\" matched nothing" }
+  ],
   "summary": { "sources": {"read": 1, "unavailable": 1},
                "packages": {"harvested": 6, "restricted": 2} }
 }
@@ -291,7 +295,24 @@ Atlas is public, so this file is a contract others build on. It carries
 Schema decisions that must not be ambiguous, since they cannot be changed without
 a version bump:
 
-- **`primitives: null` means "not harvested"** (restricted or unavailable).
+- **`warnings[]` exists so a silently-ineffective control becomes visible.** It carries
+  `{kind, source, detail}`. The first `kind` is `unused-exclude`: an `exclude:` pattern that
+  matched nothing during the run.
+
+  This field is in the schema from v1 deliberately. The exclude mechanism has now failed
+  silently four times — repo mode enumerating raw trees, marketplace mode assuming the
+  emitter had filtered, a malformed glob matching nothing, and a legal-but-inert pattern
+  matching nothing. The first three were fixed as bugs; the fourth showed the shape is
+  structural. **A pattern can be well-formed, accepted, and still withhold nothing**, and no
+  amount of load-time validation can detect that — a typo'd `skils/*` is legal and matchable
+  and simply wrong.
+
+  So the mechanism stops being silent instead. This applies §7's existing principle — bounded
+  coverage is stated in the output, never silently truncated — to excludes rather than
+  packages. An operator who believes they withheld something and did not now learns it from
+  the artifact.
+
+- **`primitives: null` means "not harvested"** (`restricted` or `excluded`).
   **`primitives: []` means "harvested, genuinely empty."** These are distinct.
 - **An `unavailable` source still appears in `sources`**, with `status` and
   `reason`. It is never silently absent. Its packages do not appear at all —
