@@ -685,3 +685,13 @@ Verified, deliberately not fixed, recorded so nobody rediscovers them as surpris
   the boundary check and the read. Unaddressed: Atlas reads a tree it was pointed at by an operator,
   not a hostile filesystem racing it, and closing this would require opening by file descriptor
   throughout.
+
+- **A bare `git@` source (no host or path) passes URL validation.** `ResolveURL` accepts any
+  `git@`-prefixed source as fully qualified, so a truncated `git@` reaches the clone step unchanged.
+
+  Not fixed because the failure is *honest*: it surfaces as a clone failure, which is what it is.
+  The defect this validation exists to prevent is different and worse — a malformed source
+  **mangled into a plausible-looking URL**, which then fails as `access: restricted` and tells an
+  operator they lack permission when their manifest is simply wrong. That misclassification is
+  closed. Distinguishing the two is the point: not every malformed input needs rejecting, only the
+  ones that fail as the wrong error.
