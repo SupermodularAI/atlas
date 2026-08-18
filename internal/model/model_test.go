@@ -142,7 +142,7 @@ func TestAtlasWireTagNames(t *testing.T) {
 		GeneratedAt:   "2026-08-18T11:20:00Z",
 		Sources: []Source{
 			{
-				Name:       "ai-primitives",
+				Name:       "example-marketplace",
 				Kind:       "marketplace",
 				Status:     StatusRead,
 				SourceBase: "https://example.com/org",
@@ -152,31 +152,31 @@ func TestAtlasWireTagNames(t *testing.T) {
 		},
 		Packages: []Package{
 			{
-				Name:         "smos-infra",
-				Source:       "ai-primitives",
+				Name:         "widget-infra",
+				Source:       "example-marketplace",
 				Description:  "desc",
 				Version:      "0.2.1",
-				ResolvedFrom: "https://example.com/org/smos-infra",
+				ResolvedFrom: "https://example.com/org/widget-infra",
 				ResolvedSha:  "99bbbb8d952b80882ce5a68fc588580f8f16756b",
 				Access:       AccessPublic,
 				Primitives: []Primitive{
-					{Type: TypeSkill, Name: "mr-review-agent", Description: "reviews MRs"},
+					{Type: TypeSkill, Name: "review-helper", Description: "reviews MRs"},
 				},
 				Install: &Install{
-					MarketplaceAdd: "apm marketplace add u --name ai-primitives",
-					Install:        "apm install smos-infra@ai-primitives --target claude",
+					MarketplaceAdd: "apm marketplace add u --name example-marketplace",
+					Install:        "apm install widget-infra@example-marketplace --target claude",
 				},
 			},
 		},
 		Collisions: []Collision{
-			{Kind: "package-name", Name: "smos-infra", Sources: []string{"smos", "core"}},
+			{Kind: "package-name", Name: "widget-infra", Sources: []string{"widget", "core"}},
 		},
 		Summary: Summary{
 			Sources:  map[string]int{"read": 1},
 			Packages: map[string]int{"harvested": 1},
 		},
 		Warnings: []Warning{
-			{Kind: "unused-exclude", Source: "ai-primitives", Detail: "pattern matched nothing"},
+			{Kind: "unused-exclude", Source: "example-marketplace", Detail: "pattern matched nothing"},
 		},
 	}
 

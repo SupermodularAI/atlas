@@ -7,7 +7,7 @@ import (
 )
 
 const fixtureManifest = `
-name: ai-primitives
+name: example-marketplace
 version: 0.2.1
 description: a marketplace
 author:
@@ -38,7 +38,7 @@ func TestParseManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseManifest: %v", err)
 	}
-	if m.Name != "ai-primitives" {
+	if m.Name != "example-marketplace" {
 		t.Errorf("Name = %q", m.Name)
 	}
 	if m.Owner != "acme" {
@@ -156,7 +156,7 @@ func assertRejectsMissingMarketplace(t *testing.T, input string) {
 // marketplace that currently publishes nothing) and must still parse.
 func TestParseManifestAcceptsEmptyPackagesList(t *testing.T) {
 	m, err := ParseManifest([]byte(`
-name: ai-primitives
+name: example-marketplace
 marketplace:
   owner:
     name: acme
