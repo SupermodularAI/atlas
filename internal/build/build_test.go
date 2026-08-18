@@ -316,3 +316,148 @@ sources:
 		t.Errorf("Summary.Packages = %+v", a.Summary.Packages)
 	}
 }
+
+// A repo-mode exclude glob that matches nothing must surface as exactly one
+// unused-exclude warning; a glob that did match must produce none. This is
+// the visibility requirement docs/design.md §5 adds: a well-formed, accepted
+// exclude pattern can still withhold nothing, and only a post-walk check can
+// catch that.
+func TestBuildRepoUnusedExcludeWarns(t *testing.T) {
+	repo := newFixtureRepo(t, map[string]string{
+		".claude/skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Reviews code.\n---\nbody",
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: repo
+    name: r
+    url: `+repo+`
+    exclude:
+      - "skills/typo-pattern-*"
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(a.Warnings) != 1 {
+		t.Fatalf("got %d warnings, want 1: %+v", len(a.Warnings), a.Warnings)
+	}
+	w := a.Warnings[0]
+	if w.Kind != WarningUnusedExclude {
+		t.Errorf("Kind = %q, want %q", w.Kind, WarningUnusedExclude)
+	}
+	if w.Source != "r" {
+		t.Errorf("Source = %q, want %q", w.Source, "r")
+	}
+}
+
+func TestBuildRepoMatchedExcludeWarnsNothing(t *testing.T) {
+	// Root-layout paths (no .claude/ prefix): the exclude pattern is matched
+	// against the walk-root-relative path, so it must share the same base as
+	// the primitive it is meant to withhold.
+	repo := newFixtureRepo(t, map[string]string{
+		"skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Reviews code.\n---\nbody",
+		"skills/finance-ops/SKILL.md": "---\nname: finance-ops\ndescription: Money stuff.\n---\nbody",
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: repo
+    name: r
+    url: `+repo+`
+    exclude:
+      - "skills/finance-*"
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(a.Warnings) != 0 {
+		t.Errorf("got %d warnings, want 0: %+v", len(a.Warnings), a.Warnings)
+	}
+	if len(a.Packages) != 1 || len(a.Packages[0].Primitives) != 1 {
+		t.Fatalf("packages = %+v", a.Packages)
+	}
+	if a.Packages[0].Primitives[0].Name != "code-review" {
+		t.Errorf("finance-ops should have been excluded, got %+v", a.Packages[0].Primitives)
+	}
+}
+
+// A marketplace exclude pattern that matches no package name in the manifest
+// must warn too — the same silent-ineffective-control failure, reached by
+// the marketplace route rather than the repo-glob route.
+func TestBuildMarketplaceUnusedExcludeWarns(t *testing.T) {
+	open := newFixtureRepo(t, map[string]string{
+		"skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Fine.\n---\nbody",
+	}, "")
+	mkt := newFixtureRepo(t, map[string]string{
+		"apm.yml": `
+name: mkt
+version: 1.0.0
+marketplace:
+  owner:
+    name: acme
+  packages:
+    - name: pkg-open
+      description: "Open."
+      source: ` + open + `
+`,
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: marketplace
+    name: mkt
+    url: `+mkt+`
+    exclude:
+      - pkg-typo
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(a.Warnings) != 1 || a.Warnings[0].Kind != WarningUnusedExclude {
+		t.Fatalf("got %+v, want one unused-exclude warning", a.Warnings)
+	}
+}
+
+// Non-obvious requirement: Build must initialise every slice field to a
+// non-nil empty, never leave it nil, when there is genuinely nothing to
+// report. A nil slice marshals to JSON null; the schema's producer
+// obligation is "[]" for "looked and found none".
+func TestBuildEmitsEmptyArraysNotNull(t *testing.T) {
+	repo := newFixtureRepo(t, map[string]string{
+		".claude/skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Reviews code.\n---\nbody",
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: repo
+    name: r
+    url: `+repo+`
+    acknowledgeUnclassified: true
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if a.Collisions == nil {
+		t.Error("Collisions is nil, want non-nil empty slice")
+	}
+	if a.Warnings == nil {
+		t.Error("Warnings is nil, want non-nil empty slice")
+	}
+	out := jsonOf(t, a)
+	if strings.Contains(out, `"collisions": null`) {
+		t.Error(`atlas.json emits "collisions": null, want "[]"`)
+	}
+	if strings.Contains(out, `"warnings": null`) {
+		t.Error(`atlas.json emits "warnings": null, want "[]"`)
+	}
+	if !strings.Contains(out, `"collisions": []`) {
+		t.Errorf("atlas.json should emit \"collisions\": [], got:\n%s", out)
+	}
+	if !strings.Contains(out, `"warnings": []`) {
+		t.Errorf("atlas.json should emit \"warnings\": [], got:\n%s", out)
+	}
+}
