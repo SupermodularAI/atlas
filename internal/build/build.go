@@ -121,10 +121,17 @@ func Build(opts Options) (*model.Atlas, error) {
 		SchemaVersion: model.SchemaVersion,
 		Company:       opts.Descriptor.Company,
 		GeneratedAt:   now(),
-		Sources:       []model.Source{},
-		Packages:      []model.Package{},
-		Collisions:    []model.Collision{},
-		Warnings:      []model.Warning{},
+		// Sources is seeded []model.Source{} here so an atlas with genuinely
+		// no sources would still marshal "sources": [], never null. This is
+		// a code-read guarantee only: descriptor.Load rejects zero-source
+		// descriptors ("at least one source is required"), so no descriptor
+		// that reaches Build can ever have an empty Sources — the empty
+		// case cannot be exercised end to end through this package's public
+		// entry point. Do not mistake the missing test for an oversight.
+		Sources:    []model.Source{},
+		Packages:   []model.Package{},
+		Collisions: []model.Collision{},
+		Warnings:   []model.Warning{},
 		Summary: model.Summary{
 			Sources:  map[string]int{model.StatusRead: 0, model.StatusUnavailable: 0},
 			Packages: map[string]int{"harvested": 0, "restricted": 0, "excluded": 0},

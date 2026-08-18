@@ -1,12 +1,14 @@
 package build
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/supermodular/atlas/internal/descriptor"
+	"github.com/supermodular/atlas/internal/gitc"
 	"github.com/supermodular/atlas/internal/model"
 )
 
@@ -459,5 +461,270 @@ sources:
 	}
 	if !strings.Contains(out, `"warnings": []`) {
 		t.Errorf("atlas.json should emit \"warnings\": [], got:\n%s", out)
+	}
+}
+
+// Repo-mode exclude accounting must credit EVERY pattern that matches a
+// path, not merely the first one WalkTree's Exclude callback returns for a
+// given file. This is the mechanism that has recurred as a defect four
+// times in this project (an exclude that silently withholds nothing), and
+// a "credit only the first matching pattern" implementation passes every
+// other test in this file — see fix-plan.md §1.
+//
+// The exposing scenario needs two overlapping patterns that both match one
+// shared path, and each ALSO uniquely matches a second path of its own:
+//   - "skills/finance-*"     matches skills/finance-ops/** (shared) and
+//     skills/finance-forecast/** (unique to this pattern).
+//   - "skills/finance-ops"   matches skills/finance-ops/** (shared) only.
+//
+// Order matters for a first-match-only mutant: "skills/finance-*" is listed
+// FIRST, so a first-match-only implementation would win the shared path for
+// the wildcard pattern and never credit the narrower "skills/finance-ops"
+// pattern — wrongly reporting it unused. The real implementation credits
+// both, so zero warnings are expected.
+func TestBuildRepoExcludeCreditsEveryMatchingPattern(t *testing.T) {
+	repo := newFixtureRepo(t, map[string]string{
+		"skills/code-review/SKILL.md":      "---\nname: code-review\ndescription: Reviews code.\n---\nbody",
+		"skills/finance-ops/SKILL.md":      "---\nname: finance-ops\ndescription: Money stuff.\n---\nbody",
+		"skills/finance-forecast/SKILL.md": "---\nname: finance-forecast\ndescription: Also money.\n---\nbody",
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: repo
+    name: r
+    url: `+repo+`
+    exclude:
+      - "skills/finance-*"
+      - "skills/finance-ops"
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(a.Warnings) != 0 {
+		t.Fatalf("got %d warnings, want 0 (both overlapping patterns matched something): %+v", len(a.Warnings), a.Warnings)
+	}
+	// Control: code-review must still be the sole surviving primitive,
+	// proving the fixture was actually walked rather than failing closed
+	// for an unrelated reason.
+	if len(a.Packages) != 1 || len(a.Packages[0].Primitives) != 1 {
+		t.Fatalf("packages = %+v", a.Packages)
+	}
+	if a.Packages[0].Primitives[0].Name != "code-review" {
+		t.Errorf("finance-* skills should have been excluded, got %+v", a.Packages[0].Primitives)
+	}
+}
+
+// gitc.ErrRefNotFound must abort the marketplace build entirely — nil atlas,
+// non-nil error naming the package and the resolved ref/tagPattern — and
+// must NEVER be rendered as an access: restricted card. That last part is
+// the point: misclassifying a missing ref as an access failure cost two fix
+// rounds in internal/gitc (see gitc.ErrRefNotFound's own doc comment), and
+// this is the layer that could silently reintroduce that collapse.
+func TestBuildMarketplaceMissingRefAborts(t *testing.T) {
+	// Tagged v1.0.0, but the manifest below declares version "9.9.9" with
+	// tagPattern "v{version}" — resolves to "v9.9.9", which does not exist.
+	pkg := newFixtureRepo(t, map[string]string{
+		"skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Fine.\n---\nbody",
+	}, "v1.0.0")
+	mkt := newFixtureRepo(t, map[string]string{
+		"apm.yml": `
+name: mkt
+version: 1.0.0
+marketplace:
+  owner:
+    name: acme
+  build:
+    tagPattern: "v{version}"
+  packages:
+    - name: pkg-missing-tag
+      description: "Tag will not resolve."
+      source: ` + pkg + `
+      version: "9.9.9"
+`,
+	}, "")
+
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: marketplace
+    name: mkt
+    url: `+mkt+`
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected abort: manifest tagPattern resolves to a tag that does not exist upstream")
+	}
+	if a != nil {
+		t.Errorf("atlas = %+v, want nil on abort", a)
+	}
+	if !errors.Is(err, gitc.ErrRefNotFound) {
+		t.Errorf("err = %v, want it to wrap gitc.ErrRefNotFound", err)
+	}
+	if errors.Is(err, gitc.ErrAccessDenied) {
+		t.Error("err wraps gitc.ErrAccessDenied — a missing ref must never be classified as an access failure (§7)")
+	}
+	for _, want := range []string{"pkg-missing-tag", "v9.9.9", "v{version}"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to name %q", err.Error(), want)
+		}
+	}
+}
+
+// duplicateWarnings has zero test coverage at the build-package level:
+// pr-review mutated it to `return nil` unconditionally and the full suite
+// still passed. A repo with the same Type+Name at both the package root and
+// .claude/ must produce exactly one duplicate-primitive warning, and the
+// dedup itself must still keep exactly one of the two primitives.
+func TestBuildRepoDuplicatePrimitiveWarns(t *testing.T) {
+	repo := newFixtureRepo(t, map[string]string{
+		"skills/dup/SKILL.md":         "---\nname: dup\ndescription: Root copy.\n---\nbody",
+		".claude/skills/dup/SKILL.md": "---\nname: dup\ndescription: Claude copy.\n---\nbody",
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: repo
+    name: r
+    url: `+repo+`
+    acknowledgeUnclassified: true
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(a.Warnings) != 1 {
+		t.Fatalf("got %d warnings, want 1: %+v", len(a.Warnings), a.Warnings)
+	}
+	w := a.Warnings[0]
+	if w.Kind != WarningDuplicatePrimitive {
+		t.Errorf("Kind = %q, want %q", w.Kind, WarningDuplicatePrimitive)
+	}
+	if w.Source != "r" {
+		t.Errorf("Source = %q, want %q", w.Source, "r")
+	}
+	// The root copy is kept (root wins over .claude/), so the dropped side
+	// specifically must name the .claude/ path. Kept/Dropped carry absolute
+	// clone-dir paths, and the .claude/ path CONTAINS the root-relative
+	// suffix as a substring of the kept path too, so a plain Contains can't
+	// tell kept from dropped: assert on the "kept <path>, dropped <path>"
+	// shape instead, checking the .claude/ segment appears only after
+	// "dropped ", not after "kept ".
+	keptIdx := strings.Index(w.Detail, "kept ")
+	droppedIdx := strings.Index(w.Detail, "dropped ")
+	if keptIdx == -1 || droppedIdx == -1 || droppedIdx < keptIdx {
+		t.Fatalf("Detail = %q, want %q then %q substrings in order", w.Detail, "kept ", "dropped ")
+	}
+	keptSeg := w.Detail[keptIdx:droppedIdx]
+	droppedSeg := w.Detail[droppedIdx:]
+	if !strings.HasSuffix(strings.TrimSuffix(keptSeg, ", "), "skills/dup/SKILL.md") || strings.Contains(keptSeg, ".claude/") {
+		t.Errorf("kept segment = %q, want it to name the ROOT skills/dup/SKILL.md, not the .claude/ one", keptSeg)
+	}
+	if !strings.Contains(droppedSeg, ".claude/skills/dup/SKILL.md") {
+		t.Errorf("dropped segment = %q, want it to name .claude/skills/dup/SKILL.md", droppedSeg)
+	}
+	if len(a.Packages) != 1 || len(a.Packages[0].Primitives) != 1 {
+		t.Fatalf("packages = %+v, want exactly one deduped primitive", a.Packages)
+	}
+}
+
+// Install must be populated — both commands well-formed — when the
+// manifest declares a sourceBase. The committed suite only ever exercised
+// the nil-sourceBase (Install == nil) case; this closes the populated side.
+func TestBuildMarketplaceInstallPopulatedWithSourceBase(t *testing.T) {
+	open := newFixtureRepo(t, map[string]string{
+		"skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Fine.\n---\nbody",
+	}, "")
+	mkt := newFixtureRepo(t, map[string]string{
+		"apm.yml": `
+name: mkt
+version: 1.0.0
+marketplace:
+  owner:
+    name: acme
+  sourceBase: https://git.example.test/acme/group
+  packages:
+    - name: pkg-open
+      description: "Open."
+      source: ` + open + `
+`,
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: marketplace
+    name: mkt
+    url: `+mkt+`
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(a.Packages) != 1 {
+		t.Fatalf("got %d packages, want 1", len(a.Packages))
+	}
+	p := a.Packages[0]
+	if p.Install == nil {
+		t.Fatal("Install = nil, want populated because the manifest declares sourceBase")
+	}
+	wantAdd := "apm marketplace add " + mkt + " --name mkt"
+	if p.Install.MarketplaceAdd != wantAdd {
+		t.Errorf("MarketplaceAdd = %q, want %q", p.Install.MarketplaceAdd, wantAdd)
+	}
+	wantInstall := "apm install pkg-open@mkt --target claude"
+	if p.Install.Install != wantInstall {
+		t.Errorf("Install = %q, want %q", p.Install.Install, wantInstall)
+	}
+}
+
+// Summary.Packages' three-way split (harvested + restricted + excluded) is
+// never exercised together by any committed test — every existing test
+// hits at most two states in one run. One fixture with all three, asserting
+// each count, closes the combination the arithmetic could get wrong.
+func TestBuildSummaryPackagesThreeWaySplit(t *testing.T) {
+	open := newFixtureRepo(t, map[string]string{
+		"skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Fine.\n---\nbody",
+	}, "")
+	mkt := newFixtureRepo(t, map[string]string{
+		"apm.yml": `
+name: mkt
+version: 1.0.0
+marketplace:
+  owner:
+    name: acme
+  packages:
+    - name: pkg-open
+      description: "Open."
+      source: ` + open + `
+    - name: pkg-gone
+      description: "Unreachable."
+      source: file:///nonexistent-atlas-package
+    - name: pkg-secret
+      description: "Excluded."
+      source: file:///nonexistent-atlas-package-excluded
+`,
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: marketplace
+    name: mkt
+    url: `+mkt+`
+    exclude:
+      - pkg-secret
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	want := map[string]int{"harvested": 1, "restricted": 1, "excluded": 1}
+	for k, v := range want {
+		if a.Summary.Packages[k] != v {
+			t.Errorf("Summary.Packages[%q] = %d, want %d (full: %+v)", k, a.Summary.Packages[k], v, a.Summary.Packages)
+		}
+	}
+	if len(a.Packages) != 3 {
+		t.Fatalf("got %d packages, want 3", len(a.Packages))
 	}
 }
