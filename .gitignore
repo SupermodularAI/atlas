@@ -1,0 +1,4 @@
+/atlas
+/dist/
+*.test
+.agent/work/
