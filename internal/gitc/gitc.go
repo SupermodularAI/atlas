@@ -42,9 +42,9 @@ func Clone(url, ref, destParent string) (*CloneResult, error) {
 	if out, err := run(dir, args...); err != nil {
 		os.RemoveAll(dir)
 		if isAccessFailure(out) {
-			return nil, fmt.Errorf("%w: %s", ErrAccessDenied, firstLine(out))
+			return nil, fmt.Errorf("%w: %s", ErrAccessDenied, failureReason(out))
 		}
-		return nil, fmt.Errorf("git clone %s: %v: %s", url, err, firstLine(out))
+		return nil, fmt.Errorf("git clone %s: %v: %s", url, err, failureReason(out))
 	}
 
 	sha, err := run(dir, "rev-parse", "HEAD")
@@ -93,11 +93,35 @@ func isAccessFailure(out string) bool {
 	return false
 }
 
-func firstLine(s string) string {
+// failureReason picks the most informative line out of git's combined
+// output. Git's first line is always the "Cloning into '<dir>'..."
+// boilerplate — the actual reason is the first "fatal:"/"error:" line, if
+// any. Falling back to the first line (as this used to do) means every
+// wrapped error reports a meaningless temp-dir path instead of a reason,
+// which is a problem when that text becomes a published "locked" package
+// card's reason field (see docs/design.md §7).
+func failureReason(s string) string {
 	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	lines := strings.Split(s, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "fatal:") || strings.HasPrefix(lower, "error:") {
+			if i := strings.IndexByte(line, ':'); i >= 0 {
+				return strings.TrimSpace(line[i+1:])
+			}
+			return line
+		}
 	}
+
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+
 	return s
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -46,5 +47,52 @@ func TestCloneNonexistentRepoIsAccessDenied(t *testing.T) {
 	}
 	if !errors.Is(err, ErrAccessDenied) {
 		t.Errorf("err = %v, want ErrAccessDenied", err)
+	}
+}
+
+func TestCloneNonexistentRepoReasonOmitsTempPath(t *testing.T) {
+	_, err := Clone("file:///nonexistent-"+t.Name(), "", t.TempDir())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "Cloning into") {
+		t.Errorf("err = %q, want reason to omit the temp-dir boilerplate line", msg)
+	}
+	if !strings.Contains(msg, "does not appear to be a git repository") &&
+		!strings.Contains(msg, "does not exist") &&
+		!strings.Contains(msg, "not found") {
+		t.Errorf("err = %q, want reason to contain the actual git failure text", msg)
+	}
+}
+
+func TestFailureReasonPrefersFatalLine(t *testing.T) {
+	out := "Cloning into 'out'...\n" +
+		"fatal: '/tmp/atlas-clone-537204601/nope' does not appear to be a git repository\n" +
+		"fatal: Could not read from remote repository.\n"
+	got := failureReason(out)
+	if strings.Contains(got, "Cloning into") {
+		t.Errorf("failureReason(%q) = %q, want boilerplate line excluded", out, got)
+	}
+	if !strings.Contains(got, "does not appear to be a git repository") {
+		t.Errorf("failureReason(%q) = %q, want the fatal: line's content", out, got)
+	}
+}
+
+func TestFailureReasonFallsBackToLastNonEmptyLine(t *testing.T) {
+	out := "Cloning into 'out'...\n" +
+		"remote: something went wrong\n" +
+		"\n"
+	got := failureReason(out)
+	if got != "remote: something went wrong" {
+		t.Errorf("failureReason(%q) = %q, want last non-empty line", out, got)
+	}
+}
+
+func TestFailureReasonFallsBackToWholeOutput(t *testing.T) {
+	out := "single line, no fatal prefix"
+	got := failureReason(out)
+	if got != out {
+		t.Errorf("failureReason(%q) = %q, want whole trimmed output", out, got)
 	}
 }
