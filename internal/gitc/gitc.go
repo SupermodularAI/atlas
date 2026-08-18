@@ -17,6 +17,13 @@ import (
 // Callers render these as access "restricted".
 var ErrAccessDenied = errors.New("access denied")
 
+// ErrRefNotFound wraps a clone failure where the repository is readable but
+// the requested ref (branch, tag, or SHA) does not exist there. This is a
+// config error (e.g. a tagPattern that resolved to a nonexistent tag), not an
+// access problem, and callers must not render it as a locked/restricted
+// package card — see docs/design.md §7's two-level degradation model.
+var ErrRefNotFound = errors.New("ref not found")
+
 // CloneResult is where the tree landed and what commit it actually is.
 type CloneResult struct {
 	Dir string
@@ -37,6 +44,12 @@ func Clone(url, ref, destParent string) (*CloneResult, error) {
 
 	if out, err := run(dir, args...); err != nil {
 		os.RemoveAll(dir)
+		// Checked before the broad access scan: a missing ref is a config
+		// error, not an access problem, and "not found" would otherwise trip
+		// isAccessFailure and misreport it as ErrAccessDenied.
+		if isRefNotFound(out) {
+			return nil, fmt.Errorf("%w: %s", ErrRefNotFound, failureReason(out))
+		}
 		if isAccessFailure(out) {
 			return nil, fmt.Errorf("%w: %s", ErrAccessDenied, failureReason(out))
 		}
@@ -80,16 +93,28 @@ func run(dir string, args ...string) (string, error) {
 	return string(out), err
 }
 
+// isRefNotFound reports whether out is git's message for a ref (branch, tag,
+// or SHA) that does not exist on an otherwise-readable repo. This must be
+// checked before isAccessFailure: unlike the genuinely ambiguous messages
+// isAccessFailure matches, this one is unambiguous — git names the ref and
+// says plainly that it wasn't found — so there is no trade being accepted
+// here, only a case to detect explicitly.
+func isRefNotFound(out string) bool {
+	return strings.Contains(strings.ToLower(out), "not found in upstream")
+}
+
 // isAccessFailure distinguishes "you may not read this" from a real fault. The
 // git binary reports both through exit status, so the message is all we have.
 //
-// This is deliberately broad, and that has an accepted false positive: "not
-// found" also matches git's "Remote branch X not found in upstream origin",
-// which is a config error (e.g. a tagPattern that resolved to a nonexistent
-// ref), not an access problem — it would surface as a "restricted" card
-// instead of the real cause. The trade is intentional: a false "restricted"
-// is safer than a crash. ATLAS-08 could disambiguate this by checking
-// whether the ref resolved before attributing a failure to access.
+// This is deliberately broad — it accepts the trade that a false "restricted"
+// is safer than a crash for messages that are genuinely ambiguous. The bare
+// "not found" substring used to live in this list too, but it also matched
+// git's "Remote branch X not found in upstream origin" (a config error, not
+// an access problem) and caused a live misclassification. That case is not
+// ambiguous — git names the ref — so it is now matched explicitly by
+// isRefNotFound and checked first; "not found" is dropped here rather than
+// kept, since ref-not-found was the only realistic source of it and every
+// other case in this list already has a more specific signature.
 func isAccessFailure(out string) bool {
 	s := strings.ToLower(out)
 	for _, sig := range []string{
@@ -99,7 +124,6 @@ func isAccessFailure(out string) bool {
 		"access denied",
 		"repository not found",
 		"does not appear to be a git repository",
-		"not found",
 		"403",
 		"404",
 	} {

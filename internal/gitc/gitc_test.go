@@ -86,9 +86,20 @@ func TestCloneAtTagResolvesTaggedShaNotBranchTip(t *testing.T) {
 }
 
 func TestCloneMissingTagFails(t *testing.T) {
+	// A missing ref on a fully readable repo must report ErrRefNotFound, not
+	// ErrAccessDenied — the repo isn't inaccessible, the ref is just wrong.
+	// Asserting only err != nil here previously let a real misclassification
+	// (this exact scenario reporting ErrAccessDenied) pass unnoticed.
 	url := NewFixtureRepo(t, map[string]string{"a.txt": "x"}, "v1.0.0")
-	if _, err := Clone(url, "v9.9.9", t.TempDir()); err == nil {
+	_, err := Clone(url, "v9.9.9", t.TempDir())
+	if err == nil {
 		t.Fatal("expected error cloning a nonexistent tag")
+	}
+	if !errors.Is(err, ErrRefNotFound) {
+		t.Errorf("err = %v, want ErrRefNotFound", err)
+	}
+	if errors.Is(err, ErrAccessDenied) {
+		t.Errorf("err = %v, want it NOT classified as ErrAccessDenied", err)
 	}
 }
 
