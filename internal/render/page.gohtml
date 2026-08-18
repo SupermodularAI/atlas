@@ -119,7 +119,7 @@ pre {
   {{ else }}
     {{ if $src.Owner }}<p class="meta">Owner {{ $src.Owner }}{{ if $src.Version }} · version {{ $src.Version }}{{ end }}</p>{{ end }}
     {{ range $pkg := $.Packages }}{{ if eq $pkg.Source $src.Name }}
-      <div class="card{{ if ne $pkg.Access "public" }} withheld {{ $pkg.Access }}{{ end }}">
+      <div class="card{{ if eq $pkg.Access "excluded" }} withheld excluded{{ else if eq $pkg.Access "restricted" }} withheld restricted{{ end }}">
         <h3>{{ $pkg.Name }}
           {{ if eq $pkg.Access "excluded" }}<span class="tag excluded">withheld by descriptor</span>{{ end }}
           {{ if eq $pkg.Access "restricted" }}<span class="tag restricted">access restricted</span>{{ end }}

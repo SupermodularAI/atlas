@@ -70,6 +70,32 @@ func TestRenderIsSelfContained(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(out)
+
+	// The property (§10): the page's own markup and styling make no external
+	// request. Checked as "no external scheme at all", not as an enumerated
+	// list of known-bad forms — a list only catches the forms it names (an
+	// SVG xlink:href, an @font-face src, image-set(...), etc. would all slip
+	// past a literal list unnoticed).
+	//
+	// Scoped to <head>...</head> — the region that can affect what the page
+	// fetches (stylesheets, scripts, fonts, the inline <style> block) — rather
+	// than the whole document. Harvested body content (a package description,
+	// an `apm marketplace add <url> ...` install command) can legitimately
+	// contain an http(s) URL as inert escaped text; a page-wide ban would
+	// flag that as a false failure. Nothing legitimate belongs in <head>.
+	headStart := strings.Index(s, "<head>")
+	headEnd := strings.Index(s, "</head>")
+	if headStart == -1 || headEnd == -1 || headEnd < headStart {
+		t.Fatalf("rendered page missing a well-formed <head>...</head> region")
+	}
+	head := s[headStart:headEnd]
+	if strings.Contains(head, "http://") || strings.Contains(head, "https://") {
+		t.Errorf("page <head> must reference no external scheme, found one in:\n%s", head)
+	}
+
+	// Keep the literal checks too: they add specificity to the failure
+	// message when a known-bad form appears, even though the scheme check
+	// above is the actual guard.
 	for _, forbidden := range []string{
 		"<script src", `<link rel="stylesheet" href`, "@import", "<img src=\"http",
 		"fonts.googleapis", "fonts.gstatic", "cdn.",
@@ -112,6 +138,29 @@ func TestRenderDistinguishesExcludedFromRestricted(t *testing.T) {
 	// Distinctness, not mere presence: the two states must not share one marker.
 	if strings.Count(s, "access restricted") == 0 || strings.Count(s, "withheld by descriptor") == 0 {
 		t.Fatal("both markers must independently appear")
+	}
+}
+
+// Pins the exact class="..." string per Access value. Package.Access is the
+// only harvested value ever interpolated into an attribute context (page.gohtml's
+// card div); this test protects that surface across a refactor to a literal
+// eq/else-if branch (no interpolated value in attribute context at all), by
+// asserting the produced attribute text stays byte-identical.
+func TestRenderCardClassPerAccessValue(t *testing.T) {
+	a := sample()
+	out, err := Render(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`class="card"`,                     // pkg-open: public
+		`class="card withheld excluded"`,   // pkg-secret: excluded
+		`class="card withheld restricted"`, // pkg-locked: restricted
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("expected card class attribute %q, not found in rendered page", want)
+		}
 	}
 }
 
