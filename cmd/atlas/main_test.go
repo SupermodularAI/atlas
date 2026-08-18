@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -112,5 +114,58 @@ func TestStrictFailsOnWarningWithNoDegradation(t *testing.T) {
 	}
 	if err := run(desc, out, true); err == nil {
 		t.Fatal("--strict must fail when a warning was recorded, even with no unavailable/restricted counts")
+	}
+}
+
+// TestErrorPrintsOnce builds the real binary and runs it against a
+// configuration that aborts before anything is written (a repo source with
+// no classification file and no acknowledgeUnclassified/exclude), asserting
+// the error message appears exactly once on stderr, and that stdout stays
+// empty. Before this fix, cobra's own error path (Execute() returning a
+// non-nil error with SilenceUsage but not SilenceErrors) printed
+// "Error: <msg>", and main()'s own fmt.Fprintln(os.Stderr, "atlas:", err)
+// printed the same message again — the exact duplication pr-review
+// reproduced on every abort path, not just --strict. This is a subprocess
+// test rather than a unit test on run() because the duplication is a
+// property of main()'s wiring of cobra's error printing, which only exists
+// once Execute() is actually called, and main() offers no injectable writer
+// to restructure around without widening the change beyond cmd/atlas's
+// existing shape. Stdout and stderr are captured into separate buffers
+// (rather than CombinedOutput) because pr-review named "stdout stays 0
+// bytes" as a load-bearing pipe-safety property this suite didn't pin.
+func TestErrorPrintsOnce(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "atlas")
+	build := exec.Command("go", "build", "-o", bin, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+
+	repo := newFixtureRepo(t, map[string]string{
+		".claude/skills/a/SKILL.md": "---\nname: a\ndescription: Does a thing.\n---\nbody",
+	}, "")
+	dir := t.TempDir()
+	desc := filepath.Join(dir, "d.yml")
+	if err := os.WriteFile(desc, []byte("company: acme\nsources:\n  - kind: repo\n    name: r\n    url: "+repo+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "site")
+
+	cmd := exec.Command(bin, "--descriptor", desc, "--out", out)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	if runErr == nil {
+		t.Fatal("expected the binary to exit non-zero on a fail-closed unclassified repo")
+	}
+
+	if stdout.Len() != 0 {
+		t.Errorf("expected stdout to stay empty on abort, got %d bytes:\n%s", stdout.Len(), stdout.String())
+	}
+
+	const marker = "no classification file"
+	n := strings.Count(stderr.String(), marker)
+	if n != 1 {
+		t.Errorf("expected the error to be printed exactly once on stderr (found %d occurrences of %q); stderr:\n%s", n, marker, stderr.String())
 	}
 }

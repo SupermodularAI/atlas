@@ -28,6 +28,12 @@ func main() {
 			"index.html.\n\n" +
 			"Atlas is a reader: it never classifies, builds, or publishes.",
 		SilenceUsage: true,
+		// SilenceErrors: cobra's own Execute() error path would otherwise print
+		// "Error: <msg>" itself, and main()'s explicit Fprintln below would print
+		// the same message again — every abort path doubled the error line an
+		// operator has to read. Print it exactly once, with the atlas: prefix
+		// that identifies the tool in a CI log.
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(descPath, outDir, strict)
 		},
