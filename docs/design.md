@@ -686,6 +686,28 @@ Verified, deliberately not fixed, recorded so nobody rediscovers them as surpris
   not a hostile filesystem racing it, and closing this would require opening by file descriptor
   throughout.
 
+- **The self-containment guard covers `<head>` only, not the whole page.** `TestRenderIsSelfContained`
+  bans `http://` and `https://` inside `<head>…</head>`, where every fetch-triggering construct
+  currently lives (the inline `<style>` block, and any stylesheet/script/font reference). A
+  `<style>` block added to `<body>` with a remote `url(...)` would not be caught — verified.
+
+  Not scoped wider because a whole-page ban produces **false failures on valid output**:
+  `Install.MarketplaceAdd` legitimately renders a real `https://` marketplace URL as inert escaped
+  text inside `<pre>`. §10 governs the page's own outbound requests, not body text that mentions a
+  URL — a URL in `<pre>` is something a human copies, a URL in `<head>` is something the browser
+  fetches.
+
+  The residual requires a developer hand-adding new structure to the template, not third-party data
+  flowing anywhere. The stronger form — ban schemes inside *any* `<style>` block and any attribute,
+  wherever they appear — is the correct eventual fix; recorded rather than done because the current
+  guard closes the case that an ordinary edit could introduce.
+
+  Worth noting how this was found: the original test enumerated known-bad literals
+  (`<script src`, `@import`, `fonts.googleapis`, …) and a `url(https://…)` in the existing `<head>`
+  style block passed it. The orchestrator's independent grep check had the **same** blind spot,
+  because it grepped the same enumerated patterns rather than the property. Two verifications, one
+  hole. Assert the property; enumerating violations only catches the ones enumerated.
+
 - **A bare `git@` source (no host or path) passes URL validation.** `ResolveURL` accepts any
   `git@`-prefixed source as fully qualified, so a truncated `git@` reaches the clone step unchanged.
 
