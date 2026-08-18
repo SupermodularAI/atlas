@@ -89,6 +89,33 @@ func TestFailureReasonFallsBackToLastNonEmptyLine(t *testing.T) {
 	}
 }
 
+func TestCloneArgsTerminatesOptionsBeforePositionals(t *testing.T) {
+	args := cloneArgs("-weird-url", "-weird-ref", "-weird-dir")
+
+	dashIdx := -1
+	for i, a := range args {
+		if a == "--" {
+			dashIdx = i
+			break
+		}
+	}
+	if dashIdx == -1 {
+		t.Fatalf("cloneArgs(...) = %v, want a \"--\" option terminator", args)
+	}
+	for _, positional := range []string{"-weird-url", "-weird-dir"} {
+		found := false
+		for i := dashIdx + 1; i < len(args); i++ {
+			if args[i] == positional {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("cloneArgs(...) = %v, want %q to appear after \"--\"", args, positional)
+		}
+	}
+}
+
 func TestFailureReasonFallsBackToWholeOutput(t *testing.T) {
 	out := "single line, no fatal prefix"
 	got := failureReason(out)

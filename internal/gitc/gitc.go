@@ -33,11 +33,7 @@ func Clone(url, ref, destParent string) (*CloneResult, error) {
 		return nil, fmt.Errorf("mkdir clone dest: %w", err)
 	}
 
-	args := []string{"clone", "--depth", "1", "--filter=blob:none", "--no-tags"}
-	if ref != "" {
-		args = append(args, "--branch", ref)
-	}
-	args = append(args, url, dir)
+	args := cloneArgs(url, ref, dir)
 
 	if out, err := run(dir, args...); err != nil {
 		os.RemoveAll(dir)
@@ -53,6 +49,19 @@ func Clone(url, ref, destParent string) (*CloneResult, error) {
 		return nil, fmt.Errorf("resolve HEAD for %s: %w", url, err)
 	}
 	return &CloneResult{Dir: dir, Sha: strings.TrimSpace(sha)}, nil
+}
+
+// cloneArgs builds the argv for `git clone`. "--" terminates option parsing
+// before the positional url/dir. Not currently exploitable — exec.Command's
+// argv model already prevents a leading "-" in url/ref from being reparsed
+// as a flag — but url and ref come from third-party manifests, and this is
+// free defence in depth.
+func cloneArgs(url, ref, dir string) []string {
+	args := []string{"clone", "--depth", "1", "--filter=blob:none", "--no-tags"}
+	if ref != "" {
+		args = append(args, "--branch", ref)
+	}
+	return append(args, "--", url, dir)
 }
 
 // run executes git with global/system config neutralised, so a developer's
