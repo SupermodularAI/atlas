@@ -169,3 +169,74 @@ func TestErrorPrintsOnce(t *testing.T) {
 		t.Errorf("expected the error to be printed exactly once on stderr (found %d occurrences of %q); stderr:\n%s", n, marker, stderr.String())
 	}
 }
+
+// captureStderr redirects os.Stderr for the duration of fn and returns
+// everything written to it. run() prints unconditionally to os.Stderr rather
+// than an injectable writer, so a real fd swap is the only way to observe its
+// output in-process without restructuring run()'s signature. The read side is
+// drained on a separate goroutine so fn() can't block on a full pipe buffer.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	done := make(chan string, 1)
+	go func() {
+		out := make([]byte, 0, 4096)
+		tmp := make([]byte, 4096)
+		for {
+			n, rerr := r.Read(tmp)
+			out = append(out, tmp[:n]...)
+			if rerr != nil {
+				break
+			}
+		}
+		done <- string(out)
+	}()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return <-done
+}
+
+// TestOutOverwriteNoticed asserts that re-running atlas against an outDir
+// that already holds an atlas.json from a previous run prints a note that
+// the file was overwritten. Atlas's output is regenerable by construction and
+// silent overwrite is the intended contract (no --force, no refusal) — but an
+// operator re-running the tool into the same directory should be told their
+// previous atlas.json was replaced, not left to notice by diffing it
+// themselves.
+func TestOutOverwriteNoticed(t *testing.T) {
+	repo := newFixtureRepo(t, map[string]string{
+		".claude/skills/a/SKILL.md": "---\nname: a\ndescription: Does a thing.\n---\nbody",
+	}, "")
+	dir := t.TempDir()
+	desc := filepath.Join(dir, "d.yml")
+	if err := os.WriteFile(desc, []byte("company: acme\nsources:\n  - kind: repo\n    name: r\n    url: "+repo+"\n    acknowledgeUnclassified: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "site")
+
+	if err := run(desc, out, false); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+
+	stderr := captureStderr(t, func() {
+		if err := run(desc, out, false); err != nil {
+			t.Fatalf("second run: %v", err)
+		}
+	})
+
+	if !strings.Contains(stderr, "atlas.json") || !strings.Contains(stderr, "overwritten") {
+		t.Errorf("expected stderr to note atlas.json was overwritten, got:\n%s", stderr)
+	}
+}
