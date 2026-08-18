@@ -313,8 +313,12 @@ Schema decisions that must not be ambiguous, since they cannot be changed withou
 a version bump:
 
 - **`warnings[]` exists so a silently-ineffective control becomes visible.** It carries
-  `{kind, source, detail}`. The first `kind` is `unused-exclude`: an `exclude:` pattern that
-  matched nothing during the run.
+  `{kind, source, detail}`. Two kinds are defined:
+
+  - **`unused-exclude`** — an `exclude:` pattern that matched nothing during the run.
+  - **`duplicate-primitive`** — the same `Type`+`Name` found at both the package root and its
+    `.claude/` subtree. One entry is kept (root wins) and the duplicate is reported rather than
+    silently doubled or silently dropped, following §6's "Atlas reports; a resolver decides".
 
   This field is in the schema from v1 deliberately. The exclude mechanism has now failed
   silently four times — repo mode enumerating raw trees, marketplace mode assuming the
@@ -399,6 +403,23 @@ The distinction is real: an unreachable source means **unknown unknowns** (the
 package count itself is unknown), whereas a locked package means **known
 unknowns** (the manifest said it exists). Merging them would overstate what Atlas
 knows.
+
+### A third outcome: a configuration error is neither
+
+Some failures are neither "could not read" nor "read successfully". A `tagPattern` resolving to a
+tag that does not exist, or a `source` field Atlas cannot turn into a URL, means the **manifest is
+wrong** — not that access was denied. Rendering those as `restricted` tells an operator they lack
+permission when they do not, which is the §7 collapse in a third form.
+
+These therefore **abort the run** with an error naming the package, the resolved ref, and the
+`tagPattern` — rather than becoming a card or a `warnings[]` entry. The reasoning, decided during
+implementation: a warning inside an otherwise-`exit 0` run is precisely the silently-ineffective
+signal this design has been bitten by four times with excludes. An abort is what most reliably
+gets the manifest fixed.
+
+The distinction is enforced upstream in `internal/gitc`, which separates `ErrAccessDenied` (may
+not read → locked card) from `ErrRefNotFound` (readable, ref missing → abort). That separation
+cost two fix rounds to get right and must not be collapsed by a consumer.
 
 A locked package still renders a card with its manifest-supplied name and
 description, interior withheld. Three properties follow:
