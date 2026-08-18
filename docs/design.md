@@ -185,6 +185,23 @@ same reason: the unknown case is the dangerous one.
 `--audience` has no effect on `marketplace` sources, whose filtering already
 happened upstream.
 
+### The walk root is a hard boundary
+
+Every control above operates on paths **inside** the source, which makes the boundary itself a
+disclosure guarantee — one that must be enforced rather than assumed. Atlas resolves symlinks and
+harvests nothing outside the resolved root.
+
+This is not hypothetical. A repo containing `.claude -> /Users/someone/private` would otherwise
+cause Atlas to publish that private tree's primitives, because `os.Stat` and `os.ReadDir` follow
+symlinks by default. The operator reviewed the repo; they never reviewed the symlink target, so no
+exclude rule, classification file, or acknowledgement they wrote would apply to what got
+published — every control is bypassed at once rather than one filter failing.
+
+A symlink that stays within the root is legitimate and is followed normally. One that escapes
+fails closed, and an escaping base (`.claude` itself pointing out of the tree) is an error rather
+than a silent empty result: a repo that looks empty is indistinguishable from one that was never
+read.
+
 **Descriptors live in the company's own repo**, not in Atlas. Atlas is public;
 bundling client namespace layouts into it would be a disclosure problem, and the
 descriptor is arguably the client's own governance record. `--descriptor` accepts
