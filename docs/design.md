@@ -638,3 +638,29 @@ would have shown nothing; a report shows the discrepancy.
   (`kind: manifest`). Deferred — it would make Atlas render approval state, which
   is a materially stronger claim than "this was published," and needs manifest's
   tamper-evidence gap (PROD-07) closed first to be honest.
+
+### Accepted limitations
+
+Verified, deliberately not fixed, recorded so nobody rediscovers them as surprises:
+
+- **Unicode normalisation is not applied to primitive names.** Two primitives whose names are
+  visually identical but differ in NFC vs NFD encoding (`café` as 6 bytes vs 5) are both harvested
+  and are **not** reported as a duplicate, because the dedupe key is byte-exact. Confirmed by
+  probe.
+
+  Not fixed because: the disclosure consequence is nil — both primitives came from inside the walk
+  root and both are legitimately harvested, so nothing leaks. The consequence is that a page could
+  show two visually identical cards without flagging the collision, which is cosmetic rather than
+  governance-affecting. A correct fix needs `golang.org/x/text/unicode/norm`, and this project
+  limits direct dependencies to `cobra` and `yaml.v3` with any addition requiring a human decision.
+  Adding a dependency to close a cosmetic gap is the wrong trade; revisit if a real marketplace
+  ever hits it.
+
+- **Shallow-clone flags are unexercised by the test suite.** `--depth 1` and
+  `--filter=blob:none` are ignored by git for local `file://` clones, and the fixtures are local
+  repos, so no test asserts shallow or partial-clone behaviour. Only real remote transport would.
+
+- **Time-of-check/time-of-use on the walk-root boundary.** A symlink target could change between
+  the boundary check and the read. Unaddressed: Atlas reads a tree it was pointed at by an operator,
+  not a hostile filesystem racing it, and closing this would require opening by file descriptor
+  throughout.
