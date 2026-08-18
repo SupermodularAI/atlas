@@ -1,8 +1,12 @@
 package build
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/supermodular/atlas/internal/descriptor"
 	"github.com/supermodular/atlas/internal/model"
 )
 
@@ -56,5 +60,259 @@ func TestCollisionsIgnoreWithheldPackages(t *testing.T) {
 	})
 	if len(got) != 0 {
 		t.Fatalf("got %+v, want none", got)
+	}
+}
+
+func fixedNow() string { return "2026-08-18T00:00:00Z" }
+
+func writeDescriptor(t *testing.T, body string) *descriptor.Descriptor {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "d.yml")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := descriptor.Load(p)
+	if err != nil {
+		t.Fatalf("descriptor.Load: %v", err)
+	}
+	return d
+}
+
+// jsonOf marshals the atlas so tests can assert on the exact bytes shipped.
+func jsonOf(t *testing.T, a *model.Atlas) string {
+	t.Helper()
+	b, err := a.MarshalJSONIndent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestBuildRepoSourceHarvests(t *testing.T) {
+	repo := newFixtureRepo(t, map[string]string{
+		".claude/skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Reviews code.\n---\nbody",
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: repo
+    name: r
+    url: `+repo+`
+    acknowledgeUnclassified: true
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(a.Packages) != 1 {
+		t.Fatalf("got %d packages, want 1", len(a.Packages))
+	}
+	p := a.Packages[0]
+	if p.Access != model.AccessPublic {
+		t.Errorf("Access = %q, want public", p.Access)
+	}
+	if len(p.Primitives) != 1 || p.Primitives[0].Name != "code-review" {
+		t.Errorf("Primitives = %+v", p.Primitives)
+	}
+	if len(p.ResolvedSha) != 40 {
+		t.Errorf("ResolvedSha = %q, want a full SHA", p.ResolvedSha)
+	}
+	if p.Install != nil {
+		t.Errorf("Install = %+v, want nil for a repo source (no install path)", p.Install)
+	}
+}
+
+// Guarantee test 6: fail closed on an unclassified repo.
+func TestBuildRefusesUnacknowledgedUnclassifiedRepo(t *testing.T) {
+	repo := newFixtureRepo(t, map[string]string{
+		".claude/skills/a/SKILL.md": "---\nname: a\ndescription: d\n---\nbody",
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: repo
+    name: unclassified-src
+    url: `+repo+`
+`)
+	_, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected refusal: no classification, no excludes, no acknowledgement")
+	}
+	// A weak `err != nil` assertion would also pass if descriptor.Load or the
+	// clone itself failed for an unrelated reason. A distinctive source name
+	// pins the refusal to the fail-closed path specifically — a short letter
+	// like "r" would match almost any error text ("harvest", "error", ...).
+	if !strings.Contains(err.Error(), "unclassified-src") {
+		t.Errorf("error %q should name the offending source", err.Error())
+	}
+}
+
+// Guarantee test 8, the critical one: exclusion must beat a SUCCESSFUL clone.
+func TestBuildMarketplaceExcludeBeatsSuccessfulClone(t *testing.T) {
+	secret := newFixtureRepo(t, map[string]string{
+		"skills/finance-ops/SKILL.md": "---\nname: finance-ops\ndescription: SECRETVALUE.\n---\nbody",
+	}, "v1.0.0")
+	open := newFixtureRepo(t, map[string]string{
+		"skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Fine.\n---\nbody",
+	}, "v1.0.0")
+
+	// A manifest whose sources are absolute file:// URLs, both readable.
+	mkt := newFixtureRepo(t, map[string]string{
+		"apm.yml": `
+name: mkt
+version: 1.0.0
+marketplace:
+  owner:
+    name: acme
+  build:
+    tagPattern: "v{version}"
+  packages:
+    - name: pkg-secret
+      description: "Confidential."
+      source: ` + secret + `
+      version: "1.0.0"
+    - name: pkg-open
+      description: "Open."
+      source: ` + open + `
+      version: "1.0.0"
+`,
+	}, "")
+
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: marketplace
+    name: mkt
+    url: `+mkt+`
+    exclude:
+      - pkg-secret
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	out := jsonOf(t, a)
+	if strings.Contains(out, "SECRETVALUE") {
+		t.Error("excluded package's primitive description leaked into atlas.json")
+	}
+	if strings.Contains(out, "finance-ops") {
+		t.Error("excluded package's primitive NAME leaked into atlas.json")
+	}
+
+	var secretPkg, openPkg *model.Package
+	for i := range a.Packages {
+		switch a.Packages[i].Name {
+		case "pkg-secret":
+			secretPkg = &a.Packages[i]
+		case "pkg-open":
+			openPkg = &a.Packages[i]
+		}
+	}
+	if secretPkg == nil {
+		t.Fatal("excluded package must still appear as a card, name and description only")
+	}
+	if secretPkg.Access != model.AccessExcluded {
+		t.Errorf("Access = %q, want excluded", secretPkg.Access)
+	}
+	if secretPkg.Primitives != nil {
+		t.Errorf("Primitives = %+v, want nil (withheld)", secretPkg.Primitives)
+	}
+	if secretPkg.Description == "" {
+		t.Error("manifest description should survive on an excluded card")
+	}
+
+	// Control: pkg-open proves the fixture GRANTS access — both repos clone
+	// cleanly. Without this, a broken/unreadable fixture could make G8 pass
+	// for the wrong reason (a failed clone doing the withholding instead of
+	// the descriptor's exclude rule).
+	if openPkg == nil {
+		t.Fatal("pkg-open must be present and harvested")
+	}
+	if openPkg.Access != model.AccessPublic {
+		t.Errorf("pkg-open Access = %q, want public — proves the fixture is readable", openPkg.Access)
+	}
+	if len(openPkg.ResolvedSha) != 40 {
+		t.Errorf("pkg-open ResolvedSha = %q, want a full SHA — proves the clone actually happened", openPkg.ResolvedSha)
+	}
+	if len(openPkg.Primitives) != 1 || openPkg.Primitives[0].Name != "code-review" {
+		t.Errorf("pkg-open Primitives = %+v, want the harvested code-review skill", openPkg.Primitives)
+	}
+}
+
+// Guarantee test 2: an unavailable source is recorded, never silently absent.
+func TestBuildUnavailableSourceIsRecorded(t *testing.T) {
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: marketplace
+    name: gone
+    url: file:///nonexistent-atlas-fixture
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build should continue past an unavailable source: %v", err)
+	}
+	if len(a.Sources) != 1 {
+		t.Fatalf("got %d sources, want 1", len(a.Sources))
+	}
+	if a.Sources[0].Status != model.StatusUnavailable {
+		t.Errorf("Status = %q, want unavailable", a.Sources[0].Status)
+	}
+	if a.Sources[0].Reason == "" {
+		t.Error("an unavailable source must carry a reason")
+	}
+	if len(a.Packages) != 0 {
+		t.Errorf("an unavailable source must contribute no packages, got %d", len(a.Packages))
+	}
+	if a.Summary.Sources["unavailable"] != 1 {
+		t.Errorf("Summary.Sources = %+v", a.Summary.Sources)
+	}
+}
+
+// Guarantee test 1: a package Atlas cannot read is locked, not harvested.
+func TestBuildRestrictedPackageIsLocked(t *testing.T) {
+	mkt := newFixtureRepo(t, map[string]string{
+		"apm.yml": `
+name: mkt
+version: 1.0.0
+marketplace:
+  owner:
+    name: acme
+  packages:
+    - name: pkg-gone
+      description: "Exists per the manifest."
+      source: file:///nonexistent-atlas-package
+`,
+	}, "")
+	d := writeDescriptor(t, `
+company: acme
+sources:
+  - kind: marketplace
+    name: mkt
+    url: `+mkt+`
+`)
+	a, err := Build(Options{Descriptor: d, Now: fixedNow, WorkDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(a.Packages) != 1 {
+		t.Fatalf("got %d packages, want 1", len(a.Packages))
+	}
+	p := a.Packages[0]
+	if p.Access != model.AccessRestricted {
+		t.Errorf("Access = %q, want restricted", p.Access)
+	}
+	if p.Primitives != nil {
+		t.Errorf("Primitives = %+v, want nil", p.Primitives)
+	}
+	if p.Description == "" {
+		t.Error("manifest description should survive on a locked card")
+	}
+	if p.Install != nil {
+		t.Errorf("Install = %+v, want nil on a restricted card", p.Install)
+	}
+	if a.Summary.Packages["restricted"] != 1 {
+		t.Errorf("Summary.Packages = %+v", a.Summary.Packages)
 	}
 }
