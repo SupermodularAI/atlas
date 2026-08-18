@@ -3,6 +3,7 @@ package gitc
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,6 +31,57 @@ func TestCloneAtTag(t *testing.T) {
 	}
 	if len(res.Sha) != 40 {
 		t.Errorf("Sha = %q, want a 40-char SHA", res.Sha)
+	}
+}
+
+func TestCloneAtTagResolvesTaggedShaNotBranchTip(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t.test",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t.test",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	run("init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("v1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-m", "tagged commit", "--no-gpg-sign")
+	run("tag", "v1.0.0")
+	taggedSha := run("rev-parse", "v1.0.0")
+
+	// Diverge: a further commit on main after the tag, so tag != branch tip.
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("v2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "-A")
+	run("commit", "-m", "tip commit", "--no-gpg-sign")
+	tipSha := run("rev-parse", "HEAD")
+
+	if taggedSha == tipSha {
+		t.Fatal("fixture setup bug: tag and tip must diverge")
+	}
+
+	res, err := Clone("file://"+dir, "v1.0.0", t.TempDir())
+	if err != nil {
+		t.Fatalf("Clone at tag: %v", err)
+	}
+	if res.Sha != taggedSha {
+		t.Errorf("Sha = %q, want the tagged commit %q", res.Sha, taggedSha)
+	}
+	if res.Sha == tipSha {
+		t.Errorf("Sha = %q, want it to differ from the branch tip %q", res.Sha, tipSha)
 	}
 }
 
