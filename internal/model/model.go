@@ -1,0 +1,118 @@
+// Package model defines atlas.json — Atlas's public output schema.
+//
+// This is a contract others build on, so two distinctions are load-bearing and
+// cannot change without a SchemaVersion bump:
+//
+//   - Primitives == nil  means "not harvested" (restricted or excluded).
+//     Primitives == []   means "harvested, genuinely empty".
+//   - Access "restricted" means Atlas could not read it; "excluded" means Atlas
+//     could have read it but was told not to render it.
+package model
+
+import "encoding/json"
+
+// SchemaVersion is the atlas.json contract version.
+const SchemaVersion = 1
+
+// Access values describe what this run did with a package, not the package's
+// intended audience.
+const (
+	AccessPublic     = "public"     // harvested
+	AccessRestricted = "restricted" // could not read (clone denied)
+	AccessExcluded   = "excluded"   // could read; descriptor said withhold
+)
+
+// Source status values.
+const (
+	StatusRead        = "read"
+	StatusUnavailable = "unavailable"
+)
+
+// Primitive types. This closed set is Atlas's own invention: no closed
+// primitive-type enum exists upstream (manifest treats primitive.type as a
+// free-form string), so this fills a gap rather than matching a convention.
+const (
+	TypeSkill   = "skill"
+	TypeAgent   = "agent"
+	TypeHook    = "hook"
+	TypeCommand = "command"
+	TypeMCP     = "mcp"
+)
+
+// Primitive is one governable unit inside a package.
+type Primitive struct {
+	Type        string `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// Install holds the commands rendered for a package. Both are derived from
+// manifest fields; a missing command is correct, a guessed one is a defect.
+type Install struct {
+	MarketplaceAdd string `json:"marketplaceAdd"`
+	Install        string `json:"install"`
+}
+
+// Package is one package (or, for a repo source, the implicit whole-repo
+// package).
+type Package struct {
+	Name         string `json:"name"`
+	Source       string `json:"source"`
+	Description  string `json:"description,omitempty"`
+	Version      string `json:"version,omitempty"`
+	ResolvedFrom string `json:"resolvedFrom,omitempty"`
+	ResolvedSha  string `json:"resolvedSha,omitempty"`
+	Access       string `json:"access"`
+	Reason       string `json:"reason,omitempty"`
+
+	// Primitives is nil when not harvested and empty when harvested-but-empty.
+	// No omitempty: the null must survive to distinguish the two.
+	Primitives []Primitive `json:"primitives"`
+
+	Install *Install `json:"install,omitempty"`
+}
+
+// Source is one descriptor source as resolved. An unavailable source still
+// appears here, with a reason; it is never silently absent.
+type Source struct {
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	Status     string `json:"status"`
+	SourceBase string `json:"sourceBase,omitempty"`
+	Owner      string `json:"owner,omitempty"`
+	Version    string `json:"version,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// Collision records a name clash. Atlas reports; a resolver decides.
+type Collision struct {
+	Kind    string   `json:"kind"` // "package-name" or "primitive-name"
+	Name    string   `json:"name"`
+	Sources []string `json:"sources"`
+}
+
+// Summary is the counts line, also printed to stderr by the CLI.
+type Summary struct {
+	Sources  map[string]int `json:"sources"`
+	Packages map[string]int `json:"packages"`
+}
+
+// Atlas is the root of atlas.json.
+type Atlas struct {
+	SchemaVersion int         `json:"schemaVersion"`
+	Company       string      `json:"company"`
+	GeneratedAt   string      `json:"generatedAt"`
+	Sources       []Source    `json:"sources"`
+	Packages      []Package   `json:"packages"`
+	Collisions    []Collision `json:"collisions"`
+	Summary       Summary     `json:"summary"`
+}
+
+// MarshalJSONIndent renders atlas.json in its on-disk form.
+func (a *Atlas) MarshalJSONIndent() ([]byte, error) {
+	b, err := json.MarshalIndent(a, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
+}
