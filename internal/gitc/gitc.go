@@ -73,6 +73,14 @@ func run(dir string, args ...string) (string, error) {
 
 // isAccessFailure distinguishes "you may not read this" from a real fault. The
 // git binary reports both through exit status, so the message is all we have.
+//
+// This is deliberately broad, and that has an accepted false positive: "not
+// found" also matches git's "Remote branch X not found in upstream origin",
+// which is a config error (e.g. a tagPattern that resolved to a nonexistent
+// ref), not an access problem — it would surface as a "restricted" card
+// instead of the real cause. The trade is intentional: a false "restricted"
+// is safer than a crash. ATLAS-08 could disambiguate this by checking
+// whether the ref resolved before attributing a failure to access.
 func isAccessFailure(out string) bool {
 	s := strings.ToLower(out)
 	for _, sig := range []string{
