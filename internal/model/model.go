@@ -97,9 +97,15 @@ type Collision struct {
 
 // Warning records a signal that does not block generation but should be
 // visible — e.g. a descriptor exclude pattern that matched nothing. Like
-// Collisions, it carries no omitempty and is populated as [] rather than
-// left nil, so a consumer can distinguish "no warnings" from "this producer
-// does not populate this field".
+// Collisions, the field carries no omitempty on Atlas.Warnings, so a nil
+// slice and an empty slice marshal differently. That distinction only
+// holds if a producer upholds it: a producer populating Atlas.Warnings must
+// initialise it to a non-nil empty slice ([]Warning{}), not leave it nil,
+// once it has checked for warnings at all. [] marshals to "warnings": []
+// ("checked, none found"); nil marshals to "warnings": null ("not populated
+// by this producer") — and those are different claims to a consumer. The
+// struct tag alone cannot guarantee this; it is an invariant the producer
+// must uphold.
 type Warning struct {
 	Kind   string `json:"kind"` // e.g. "unused-exclude"
 	Source string `json:"source"`

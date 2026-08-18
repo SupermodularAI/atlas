@@ -2,6 +2,8 @@ package model
 
 import (
 	"encoding/json"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -94,6 +96,27 @@ func TestInstallOmitsUnpopulatedCommands(t *testing.T) {
 	}
 }
 
+// TestPackageWithZeroValueInstallEmitsEmptyObject documents a shape that is
+// easy to introduce by accident now that both Install fields carry
+// omitempty: a non-nil *Install pointing at a zero-valued Install marshals
+// to "install":{} — present but empty. This is distinct from the nil-pointer
+// case (correctly omitted by TestInstallOmitsUnpopulatedCommands's sibling,
+// the Package-level omitempty on Install) and is not itself a bug, but a
+// shape a future producer (ATLAS-08) must not introduce: when no install
+// command can be derived, the pointer must stay nil, never a zero-valued
+// &Install{}, or a consumer sees "install information exists" when none was
+// derived.
+func TestPackageWithZeroValueInstallEmitsEmptyObject(t *testing.T) {
+	p := Package{Name: "a", Access: AccessPublic, Primitives: []Primitive{}, Install: &Install{}}
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"install":{}`) {
+		t.Errorf(`Package{Install: &Install{}} must emit "install":{}, got %s`, b)
+	}
+}
+
 // TestExportedConstantLiteralValues pins the exact wire value of every
 // exported constant. atlas.json is a public schema — a typo in a constant
 // that no existing test happens to reference would otherwise ship green.
@@ -132,26 +155,58 @@ func TestExportedConstantLiteralValues(t *testing.T) {
 	}
 }
 
-// TestAtlasWireTagNames pins every JSON key on a fully-populated Atlas. For a
-// public schema a renamed or typo'd wire tag is exactly as breaking as the
-// null-vs-empty bug already tested for.
+// wireKeys marshals v and returns the sorted set of JSON object keys at its
+// top level only — it does not recurse into nested objects/arrays, since
+// those are pinned by their own case in TestAtlasWireTagNames.
+func wireKeys(t *testing.T, v any) []string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal %s: %v", b, err)
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestAtlasWireTagNames pins the exact JSON key set of every struct in the
+// atlas.json schema, one struct per case. Each value is fully populated
+// (every field non-zero) so no key drops out via omitempty — an exact-set
+// comparison must fail on a missing field, never on an incidentally-absent
+// optional one. For a public schema, a renamed, typo'd, or spuriously added
+// wire tag is exactly as breaking as the null-vs-empty bug already tested
+// for; asserting the exact set (not containment) catches both a missing key
+// and an extra one, and per struct (not per document) so one struct's tag
+// can't hide behind another struct's tag of the same name.
 func TestAtlasWireTagNames(t *testing.T) {
-	a := &Atlas{
-		SchemaVersion: SchemaVersion,
-		Company:       "acme",
-		GeneratedAt:   "2026-08-18T11:20:00Z",
-		Sources: []Source{
-			{
-				Name:       "ai-primitives",
-				Kind:       "marketplace",
-				Status:     StatusRead,
-				SourceBase: "https://example.com/org",
-				Owner:      "acme",
-				Version:    "0.2.1",
-			},
+	cases := []struct {
+		name string
+		v    any
+		want []string
+	}{
+		{
+			name: "Primitive",
+			v:    Primitive{Type: TypeSkill, Name: "mr-review-agent", Description: "reviews MRs"},
+			want: []string{"description", "name", "type"},
 		},
-		Packages: []Package{
-			{
+		{
+			name: "Install",
+			v: Install{
+				MarketplaceAdd: "apm marketplace add u --name ai-primitives",
+				Install:        "apm install smos-infra@ai-primitives --target claude",
+			},
+			want: []string{"install", "marketplaceAdd"},
+		},
+		{
+			name: "Package",
+			v: Package{
 				Name:         "smos-infra",
 				Source:       "ai-primitives",
 				Description:  "desc",
@@ -159,6 +214,7 @@ func TestAtlasWireTagNames(t *testing.T) {
 				ResolvedFrom: "https://example.com/org/smos-infra",
 				ResolvedSha:  "99bbbb8d952b80882ce5a68fc588580f8f16756b",
 				Access:       AccessPublic,
+				Reason:       "n/a",
 				Primitives: []Primitive{
 					{Type: TypeSkill, Name: "mr-review-agent", Description: "reviews MRs"},
 				},
@@ -167,55 +223,80 @@ func TestAtlasWireTagNames(t *testing.T) {
 					Install:        "apm install smos-infra@ai-primitives --target claude",
 				},
 			},
+			want: []string{
+				"access", "description", "install", "name", "primitives",
+				"reason", "resolvedFrom", "resolvedSha", "source", "version",
+			},
 		},
-		Collisions: []Collision{
-			{Kind: "package-name", Name: "smos-infra", Sources: []string{"smos", "core"}},
+		{
+			name: "Source",
+			v: Source{
+				Name:       "ai-primitives",
+				Kind:       "marketplace",
+				Status:     StatusRead,
+				SourceBase: "https://example.com/org",
+				Owner:      "acme",
+				Version:    "0.2.1",
+				Reason:     "n/a",
+			},
+			want: []string{"kind", "name", "owner", "reason", "sourceBase", "status", "version"},
 		},
-		Summary: Summary{
-			Sources:  map[string]int{"read": 1},
-			Packages: map[string]int{"harvested": 1},
+		{
+			name: "Collision",
+			v:    Collision{Kind: "package-name", Name: "smos-infra", Sources: []string{"smos", "core"}},
+			want: []string{"kind", "name", "sources"},
 		},
-		Warnings: []Warning{
-			{Kind: "unused-exclude", Source: "ai-primitives", Detail: "pattern matched nothing"},
+		{
+			name: "Warning",
+			v:    Warning{Kind: "unused-exclude", Source: "ai-primitives", Detail: "pattern matched nothing"},
+			want: []string{"detail", "kind", "source"},
+		},
+		{
+			name: "Summary",
+			v: Summary{
+				Sources:  map[string]int{"read": 1},
+				Packages: map[string]int{"harvested": 1},
+			},
+			want: []string{"packages", "sources"},
+		},
+		{
+			name: "Atlas",
+			v: &Atlas{
+				SchemaVersion: SchemaVersion,
+				Company:       "acme",
+				GeneratedAt:   "2026-08-18T11:20:00Z",
+				Sources: []Source{
+					{Name: "ai-primitives", Kind: "marketplace", Status: StatusRead},
+				},
+				Packages: []Package{
+					{Name: "smos-infra", Source: "ai-primitives", Access: AccessPublic},
+				},
+				Collisions: []Collision{
+					{Kind: "package-name", Name: "smos-infra", Sources: []string{"smos", "core"}},
+				},
+				Summary: Summary{
+					Sources:  map[string]int{"read": 1},
+					Packages: map[string]int{"harvested": 1},
+				},
+				Warnings: []Warning{
+					{Kind: "unused-exclude", Source: "ai-primitives", Detail: "pattern matched nothing"},
+				},
+			},
+			want: []string{
+				"collisions", "company", "generatedAt", "packages",
+				"schemaVersion", "sources", "summary", "warnings",
+			},
 		},
 	}
 
-	b, err := a.MarshalJSONIndent()
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(b)
-
-	wantKeys := []string{
-		`"schemaVersion"`,
-		`"company"`,
-		`"generatedAt"`,
-		`"sources"`,
-		`"packages"`,
-		`"collisions"`,
-		`"summary"`,
-		`"warnings"`,
-		`"name"`,
-		`"kind"`,
-		`"status"`,
-		`"sourceBase"`,
-		`"owner"`,
-		`"version"`,
-		`"source"`,
-		`"description"`,
-		`"resolvedFrom"`,
-		`"resolvedSha"`,
-		`"access"`,
-		`"primitives"`,
-		`"type"`,
-		`"install"`,
-		`"marketplaceAdd"`,
-		`"detail"`,
-	}
-	for _, key := range wantKeys {
-		if !strings.Contains(s, key) {
-			t.Errorf("wire tag %s missing from fully-populated Atlas: %s", key, s)
-		}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := wireKeys(t, c.v)
+			sort.Strings(c.want)
+			if !slices.Equal(got, c.want) {
+				t.Errorf("%s wire keys = %v, want %v", c.name, got, c.want)
+			}
+		})
 	}
 }
 
