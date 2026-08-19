@@ -43,7 +43,25 @@ func ParseFrontmatter(content []byte) (string, string, error) {
 	}
 	var fm frontmatter
 	if err := yaml.Unmarshal(rest[:end], &fm); err != nil {
-		return "", "", fmt.Errorf("parse frontmatter: %w", err)
+		return "", "", &frontmatterParseError{err: err}
 	}
 	return fm.Name, fm.Description, nil
+}
+
+// frontmatterParseError wraps a yaml.Unmarshal failure. yaml.Unmarshal's own
+// error text quotes a fragment of the offending value (e.g. "cannot unmarshal
+// !!str `just-a-...`"), which would echo part of a primitive's — possibly
+// confidential — frontmatter body into any surface that renders this error
+// (§9/§10). Error() therefore names the failure without the underlying
+// message; Unwrap() still exposes it so callers can use errors.Is/As.
+type frontmatterParseError struct {
+	err error
+}
+
+func (e *frontmatterParseError) Error() string {
+	return "parse frontmatter: invalid YAML"
+}
+
+func (e *frontmatterParseError) Unwrap() error {
+	return e.err
 }
