@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/supermodular/atlas/internal/build"
-	"github.com/supermodular/atlas/internal/descriptor"
-	"github.com/supermodular/atlas/internal/model"
+	"github.com/SupermodularAI/atlas/internal/build"
+	"github.com/SupermodularAI/atlas/internal/descriptor"
+	"github.com/SupermodularAI/atlas/internal/model"
 )
 
 func sample() *model.Atlas {

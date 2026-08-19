@@ -1,4 +1,4 @@
-module github.com/supermodular/atlas
+module github.com/SupermodularAI/atlas
 
 go 1.26.6
 

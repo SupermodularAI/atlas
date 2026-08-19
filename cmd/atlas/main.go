@@ -10,9 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/supermodular/atlas/internal/build"
-	"github.com/supermodular/atlas/internal/descriptor"
-	"github.com/supermodular/atlas/internal/render"
+	"github.com/SupermodularAI/atlas/internal/build"
+	"github.com/SupermodularAI/atlas/internal/descriptor"
+	"github.com/SupermodularAI/atlas/internal/render"
 )
 
 func main() {

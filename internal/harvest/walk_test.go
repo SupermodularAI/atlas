@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/supermodular/atlas/internal/model"
+	"github.com/SupermodularAI/atlas/internal/model"
 )
 
 func tree(t *testing.T, files map[string]string) string {

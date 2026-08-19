@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/supermodular/atlas/internal/descriptor"
-	"github.com/supermodular/atlas/internal/gitc"
-	"github.com/supermodular/atlas/internal/harvest"
-	"github.com/supermodular/atlas/internal/model"
-	"github.com/supermodular/atlas/internal/resolve"
+	"github.com/SupermodularAI/atlas/internal/descriptor"
+	"github.com/SupermodularAI/atlas/internal/gitc"
+	"github.com/SupermodularAI/atlas/internal/harvest"
+	"github.com/SupermodularAI/atlas/internal/model"
+	"github.com/SupermodularAI/atlas/internal/resolve"
 )
 
 // Warning kinds.

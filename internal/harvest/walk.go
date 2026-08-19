@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/supermodular/atlas/internal/model"
+	"github.com/SupermodularAI/atlas/internal/model"
 )
 
 // WalkOptions configures a tree walk. Exclude receives slash-separated paths

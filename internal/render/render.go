@@ -14,7 +14,7 @@ import (
 	"fmt"
 	"html/template"
 
-	"github.com/supermodular/atlas/internal/model"
+	"github.com/SupermodularAI/atlas/internal/model"
 )
 
 //go:embed page.gohtml
