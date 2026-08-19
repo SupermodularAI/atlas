@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ .Company }} — primitive atlas</title>
+<style>
+:root {
+  --bg: #fbfbfa; --surface: #fff; --border: #e4e4e2; --text: #1a1a19;
+  --muted: #6b6b68; --accent: #2b5fd9; --warn-bg: #fff8e6; --warn-border: #e0c068;
+  --lock-bg: #f4f4f2;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161614; --surface: #1e1e1c; --border: #33332f; --text: #ececea;
+    --muted: #9a9a95; --accent: #8fa9f0; --warn-bg: #2c2413; --warn-border: #6b5722;
+    --lock-bg: #232320;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 2rem 1.25rem; background: var(--bg); color: var(--text);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 60rem; margin: 0 auto; }
+h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
+.meta, .claim { color: var(--muted); font-size: .84rem; }
+.claim { margin: .75rem 0 0; padding: .7rem .85rem; border-left: 2px solid var(--border); }
+code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
+.notice, .warnings {
+  margin: 1.25rem 0; padding: .8rem 1rem; background: var(--warn-bg);
+  border: 1px solid var(--warn-border); border-radius: 6px; font-size: .88rem;
+}
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 1rem 1.1rem; margin: .75rem 0;
+}
+.card.withheld { background: var(--lock-bg); }
+.card.excluded { border-left: 3px solid var(--warn-border); }
+.card.restricted { border-left: 3px solid var(--muted); }
+.card h3 { margin: 0 0 .3rem; font-size: 1rem; }
+.tag {
+  display: inline-block; font-size: .72rem; padding: .1rem .45rem; border-radius: 4px;
+  border: 1px solid var(--border); color: var(--muted); margin-left: .4rem; vertical-align: 1px;
+}
+.tag.excluded { border-color: var(--warn-border); color: var(--text); }
+.tag.restricted { border-color: var(--muted); }
+.desc { margin: .35rem 0 .6rem; }
+ul.prims { list-style: none; margin: .5rem 0 0; padding: 0; }
+ul.prims li { padding: .3rem 0; border-top: 1px solid var(--border); }
+.ptype {
+  display: inline-block; min-width: 4.5rem; color: var(--muted);
+  font-size: .74rem; text-transform: uppercase; letter-spacing: .04em;
+}
+pre {
+  background: var(--lock-bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: .55rem .7rem; overflow-x: auto; margin: .5rem 0 0; font-size: .82rem;
+}
+.unavailable { border-style: dashed; }
+</style>
+</head>
+<body>
+<main>
+  <h1>{{ .Company }} — primitive atlas</h1>
+  <p class="meta">
+    Generated {{ .GeneratedAt }} · schema v{{ .SchemaVersion }} ·
+    {{ index .Summary.Sources "read" }} of {{ len .Sources }} sources read ·
+    {{ index .Summary.Packages "harvested" }} packages harvested,
+    {{ index .Summary.Packages "restricted" }} restricted,
+    {{ index .Summary.Packages "excluded" }} withheld
+  </p>
+
+  <p class="claim">
+    This atlas asserts only that these primitives were published at these sources,
+    at these resolved commit SHAs, read at the time shown above, by a principal with
+    the access recorded here. It does <strong>not assert</strong> that anything was
+    approved, reviewed, unaltered, or authorised to run — those are not claims any
+    part of this system can make.
+  </p>
+
+  {{ if .Warnings }}
+  <div class="warnings">
+    <strong>Warnings ({{ len .Warnings }}).</strong>
+    A signal that does not block generation but should stay visible.
+    <ul>
+      {{ range .Warnings }}
+      <li><span class="tag">{{ .Kind }}</span> <span class="mono">{{ .Source }}</span> — {{ .Detail }}</li>
+      {{ end }}
+    </ul>
+  </div>
+  {{ end }}
+
+  {{ if .Collisions }}
+  <div class="notice">
+    <strong>Name collisions ({{ len .Collisions }}).</strong>
+    A package name is only meaningful relative to its source, so the same name can
+    legitimately appear in more than one. Both are listed; nothing is hidden.
+    <ul>
+      {{ range .Collisions }}
+      <li><span class="mono">{{ .Name }}</span> — {{ .Kind }}, in
+        {{ range $i, $s := .Sources }}{{ if $i }}, {{ end }}<span class="mono">{{ $s }}</span>{{ end }}
+      </li>
+      {{ end }}
+    </ul>
+  </div>
+  {{ end }}
+
+  {{ range $src := .Sources }}
+  <h2>{{ $src.Name }} <span class="tag">{{ $src.Kind }}</span></h2>
+
+  {{ if eq $src.Status "unavailable" }}
+    <div class="card unavailable">
+      <p class="desc">Source <span class="mono">{{ $src.Name }}</span> could not be
+      read — its packages are not listed. This is an unknown unknown: Atlas does not
+      know what this source would have contained.</p>
+      <p class="meta">Reason: {{ $src.Reason }}</p>
+    </div>
+  {{ else }}
+    {{ if $src.Owner }}<p class="meta">Owner {{ $src.Owner }}{{ if $src.Version }} · version {{ $src.Version }}{{ end }}</p>{{ end }}
+    {{ range $pkg := $.Packages }}{{ if eq $pkg.Source $src.Name }}
+      <div class="card{{ if eq $pkg.Access "excluded" }} withheld excluded{{ else if eq $pkg.Access "restricted" }} withheld restricted{{ end }}">
+        <h3>{{ $pkg.Name }}
+          {{ if eq $pkg.Access "excluded" }}<span class="tag excluded">withheld by descriptor</span>{{ end }}
+          {{ if eq $pkg.Access "restricted" }}<span class="tag restricted">access restricted</span>{{ end }}
+          {{ if $pkg.Version }}<span class="tag">{{ $pkg.Version }}</span>{{ end }}
+        </h3>
+        {{ if $pkg.Description }}<p class="desc">{{ $pkg.Description }}</p>{{ end }}
+
+        {{ if eq $pkg.Access "public" }}
+          {{ if $pkg.ResolvedSha }}<p class="meta mono">{{ $pkg.ResolvedSha }}</p>{{ end }}
+          {{ if $pkg.Primitives }}
+            <ul class="prims">
+              {{ range $pkg.Primitives }}
+              <li><span class="ptype">{{ .Type }}</span><span class="mono">{{ .Name }}</span>
+                {{ if .Description }}<div class="meta">{{ .Description }}</div>{{ end }}
+              </li>
+              {{ end }}
+            </ul>
+          {{ else }}
+            <p class="meta">No primitives found in this package.</p>
+          {{ end }}
+          {{ if $pkg.Install }}
+<pre>{{ if $pkg.Install.MarketplaceAdd }}{{ $pkg.Install.MarketplaceAdd }}
+{{ end }}{{ $pkg.Install.Install }}</pre>
+          {{ end }}
+        {{ else }}
+          <p class="meta">
+            {{ if eq $pkg.Access "excluded" }}Primitives not listed — Atlas could have
+            read this package but was told to withhold it{{ else }}Primitives not
+            listed — Atlas was not able to read this package{{ end }}
+            {{ if $pkg.Reason }} ({{ $pkg.Reason }}){{ end }}.
+          </p>
+        {{ end }}
+      </div>
+    {{ end }}{{ end }}
+  {{ end }}
+  {{ end }}
+</main>
+</body>
+</html>
