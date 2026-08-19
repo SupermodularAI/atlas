@@ -70,7 +70,28 @@ Two honest options for a future run, neither implemented: configure an HTTPS cre
 the operator's git can satisfy the manifest, or fix `sourceBase` in the emitter. The second is
 better — it fixes the published artifact rather than working around it.
 
-## §14's prediction confirmed
+## Update, 2026-08-19: the stale namespace was fixed upstream
+
+Re-ran against the same marketplace a day later. The manifest's `sourceBase` now reads
+`.../core/transformation-stack/ai-primitives` — the **current** namespace — and Atlas's
+`resolvedFrom` reports it correctly. The stale-path half of the finding below is resolved at the
+source, and Atlas needed no change: it reads `sourceBase` from the manifest rather than guessing,
+so a fix upstream propagates automatically.
+
+The **transport** half remains: `sourceBase` is `https://`, this machine authenticates over SSH, so
+the same 6 packages are still `restricted` with the same reason. That is not a stale manifest — it
+is a correct URL over a scheme without local credentials, and it is exactly what CI resolves, since
+CI has a token. See `docs/ci-recipe.md`.
+
+One consequence discovered while writing that recipe, and worth recording because it rules out the
+most commonly-copied CI pattern: **`url.insteadOf` rewrites do not work with Atlas.**
+`internal/gitc` sets `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_SYSTEM=/dev/null` on every clone
+so that an atlas cannot silently depend on whose machine generated it. Config-based auth is
+therefore invisible to it. What works instead — `.netrc`, `GIT_ASKPASS`, an injected SSH key — all
+pass through because `gitc` inherits the parent environment and neutralises only the two config
+files.
+
+## §14's prediction confirmed (as of the original run)
 
 `resolvedFrom` recorded the **vacated** namespace for every package — the path the repos moved away
 from on 2026-08-18 — rather than the group they now live in. That is the designed behaviour: Atlas
