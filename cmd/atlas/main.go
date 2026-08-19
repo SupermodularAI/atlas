@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -28,6 +29,12 @@ func main() {
 			"index.html.\n\n" +
 			"Atlas is a reader: it never classifies, builds, or publishes.",
 		SilenceUsage: true,
+		// SilenceErrors: cobra's own Execute() error path would otherwise print
+		// "Error: <msg>" itself, and main()'s explicit Fprintln below would print
+		// the same message again — every abort path doubled the error line an
+		// operator has to read. Print it exactly once, with the atlas: prefix
+		// that identifies the tool in a CI log.
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return run(descPath, outDir, strict)
 		},
@@ -69,6 +76,20 @@ func run(descPath, outDir string, strict bool) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return fmt.Errorf("create out dir: %w", err)
 	}
+
+	// Atlas's output is regenerable by construction, so re-running into a
+	// non-empty outDir silently overwrites atlas.json/index.html rather than
+	// refusing — but an operator re-running the tool should be told their
+	// previous artifacts were replaced, not left to notice by diffing them
+	// themselves. Check for pre-existence before writing, since the write
+	// itself destroys the evidence.
+	var overwritten []string
+	for _, name := range [...]string{"atlas.json", "index.html"} {
+		if _, err := os.Stat(filepath.Join(outDir, name)); err == nil {
+			overwritten = append(overwritten, name)
+		}
+	}
+
 	js, err := a.MarshalJSONIndent()
 	if err != nil {
 		return err
@@ -82,6 +103,10 @@ func run(descPath, outDir string, strict bool) error {
 	}
 	if err := os.WriteFile(filepath.Join(outDir, "index.html"), html, 0o644); err != nil {
 		return fmt.Errorf("write index.html: %w", err)
+	}
+	if len(overwritten) > 0 {
+		fmt.Fprintf(os.Stderr, "overwritten: %s (already present in %s)\n",
+			strings.Join(overwritten, ", "), outDir)
 	}
 
 	// Always report bounded coverage: a run that quietly omitted sources or
