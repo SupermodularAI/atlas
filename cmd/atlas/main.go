@@ -15,6 +15,15 @@ import (
 	"github.com/SupermodularAI/atlas/internal/render"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=...", and is
+// "dev" for anything built without it.
+//
+// It exists so a published atlas can be traced to the tool that produced it. A
+// consumer pins a release binary by SHA256 rather than by tag — a tag is a
+// mutable pointer, a checksum is not — and this is how the pinned artifact
+// identifies itself once it is running.
+var version = "dev"
+
 func main() {
 	var (
 		descPath string
@@ -28,6 +37,7 @@ func main() {
 			"marketplaces and plain repos, and writes atlas.json plus a self-contained\n" +
 			"index.html.\n\n" +
 			"Atlas is a reader: it never classifies, builds, or publishes.",
+		Version:      version,
 		SilenceUsage: true,
 		// SilenceErrors: cobra's own Execute() error path would otherwise print
 		// "Error: <msg>" itself, and main()'s explicit Fprintln below would print
