@@ -3,7 +3,6 @@ package harvest
 import (
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -311,7 +310,12 @@ func readDescribed(p, typ, fallbackName string) (*model.Primitive, error) {
 	}
 	name, desc, err := ParseFrontmatter(content)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path.Base(p), err)
+		// Full path, not path.Base: in a package with a dozen skills, "SKILL.md:
+		// invalid YAML" names no file an operator can go and fix. The wrapped
+		// error is already content-free by construction (see
+		// frontmatterParseError), so this adds locality without adding
+		// disclosure — a path is not file content.
+		return nil, fmt.Errorf("%s: %w", p, err)
 	}
 	if strings.TrimSpace(desc) == "" {
 		return nil, fmt.Errorf("%s: %s %q has no description — add one before it can appear in an atlas",
