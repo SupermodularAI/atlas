@@ -177,6 +177,39 @@ details ul.prims li { break-inside: avoid; }
 @media (max-width: 46rem) {
   details ul.prims { columns: 1; }
 }
+
+/* --- empty state ---------------------------------------------------------
+   A query matching nothing used to hide every card and leave the source
+   headings stranded above a screen of blank space: indistinguishable from a
+   page that had broken. The count beside the input is a status readout, not
+   an explanation, so the content area has to say something itself. */
+.empty {
+  display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap;
+  margin: 2rem 0; padding: 1rem 1.1rem; color: var(--muted);
+  background: var(--surface); border: 1px dashed var(--border);
+  border-radius: 8px;
+  /* Same hazard as `pre` above, and the more important case: the echoed term
+     comes from ?q=, so its length and its lack of break opportunities are
+     chosen by whoever wrote the URL. flex-wrap wraps flex ITEMS and does
+     nothing for an unbreakable run inside one, so without this a 120-character
+     token pushes the page 123px wider than a 1200px viewport and the whole
+     document scrolls sideways. anywhere rather than break-word because it also
+     lets the run shrink the flex item's min-content width, which is what keeps
+     the layout from being forced wide in the first place. */
+  overflow-wrap: anywhere;
+}
+/* Required, exactly as for ul.index li above: the `display: flex` on .empty
+   would beat the UA [hidden] { display: none } rule, so the empty state would
+   stay painted over the restored results after the filter is cleared. Any
+   element this page toggles via the hidden attribute must either set no
+   display or carry an override like this one. */
+.empty[hidden] { display: none; }
+.empty button {
+  padding: .3rem .55rem; font: inherit; font-size: .84rem; cursor: pointer;
+  color: var(--muted); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.empty button:hover { color: var(--text); }
 </style>
 </head>
 <body>
@@ -268,6 +301,7 @@ details ul.prims li { break-inside: avoid; }
   </nav>
 
   {{ range $src := .Sources }}
+  <section class="src">
   <h2>{{ $src.Name }} <span class="tag">{{ $src.Kind }}</span></h2>
 
   {{ if eq $src.Status "unavailable" }}
@@ -319,7 +353,20 @@ details ul.prims li { break-inside: avoid; }
       </div>
     {{ end }}{{ end }}
   {{ end }}
+  </section>
   {{ end }}
+
+  <!-- "No packages or primitives match" rather than "No primitives match":
+       the message can be on screen at the same time as an unavailable-source
+       stub, which is a disclosure about a source that could not be read and is
+       deliberately never filtered. Naming both things the filter searches
+       keeps the sentence true in that state instead of appearing to contradict
+       a visible card. The stub lists no primitives, so nothing here implies it
+       was searched and rejected. -->
+  <p class="empty" id="empty" hidden>No packages or primitives match
+    &ldquo;<span id="emptyterm"></span>&rdquo;.
+    <button type="button" id="clearq">Clear filter</button>
+  </p>
 </main>
 
 <script>
@@ -335,6 +382,9 @@ details ul.prims li { break-inside: avoid; }
   var count = document.getElementById('qcount');
   var cards = Array.prototype.slice.call(document.querySelectorAll('.card[id]'));
   var indexItems = Array.prototype.slice.call(document.querySelectorAll('.index li'));
+  var sections = Array.prototype.slice.call(document.querySelectorAll('section.src'));
+  var empty = document.getElementById('empty');
+  var emptyTerm = document.getElementById('emptyterm');
 
   function setDetails(open) {
     Array.prototype.forEach.call(document.querySelectorAll('details'), function (d) {
@@ -344,8 +394,34 @@ details ul.prims li { break-inside: avoid; }
   document.getElementById('expand').addEventListener('click', function () { setDetails(true); });
   document.getElementById('collapse').addEventListener('click', function () { setDetails(false); });
 
+  /* The URL is the only state a static page can carry, and "send me the review
+     primitives" is most of this page's value. It must replace the current
+     history entry rather than push a new one: this runs on every keystroke, so
+     pushing would bury the page the reader arrived from under one history
+     entry per typed character, and the back button would stop working.
+
+     Wrapped because a file:// document has an opaque origin, where a
+     replaceState call carrying a URL can raise a SecurityError. This page is
+     designed to open straight from disk, so that path is normal use, not an
+     edge case — and an exception escaping here would propagate out of the
+     input handler and kill filtering entirely on every keystroke. Losing the
+     shareable URL on file:// is an acceptable degradation; losing the filter
+     is not. */
+  function syncURL(raw) {
+    try {
+      var u = new URL(location.href);
+      // URLSearchParams handles the encoding. Building this query string by
+      // concatenation would corrupt any term containing & or #.
+      if (raw === '') { u.searchParams.delete('q'); } else { u.searchParams.set('q', raw); }
+      history.replaceState(history.state, '', u);
+    } catch (e) { /* opaque origin: filtering still works, the URL cannot carry it. */ }
+  }
+
   function filter() {
-    var term = q.value.trim().toLowerCase();
+    // raw drives the URL and the echoed message so the reader sees the term
+    // they typed; term is the lowercased form used only for matching.
+    var raw = q.value.trim();
+    var term = raw.toLowerCase();
     var shownPrims = 0, shownCards = 0;
 
     cards.forEach(function (card) {
@@ -394,6 +470,31 @@ details ul.prims li { break-inside: avoid; }
       li.hidden = !!(target && target.hidden);
     });
 
+    // Hide a source heading block once every package under it is filtered out,
+    // so the h2 and its owner/version line do not stand over empty space.
+    //
+    // Guarded on there being at least one filterable card: an unavailable
+    // source renders a stub card with no id, which the filter never touches
+    // and which therefore reports zero visible cards. Hiding on "all cards
+    // hidden" alone would make that section vacuously eligible and delete the
+    // "could not be read" disclosure the moment anyone typed a character
+    // (spec §7). A source with nothing to filter always stays visible: the
+    // stub is a disclosure about missing data, not a search result.
+    sections.forEach(function (sec) {
+      var own = Array.prototype.slice.call(sec.querySelectorAll('.card[id]'));
+      sec.hidden = own.length > 0 && own.every(function (c) { return c.hidden; });
+    });
+
+    // Set as text, never as markup. The term arrives from the query string,
+    // which any third party can author, so this is the one place on the page
+    // where untrusted input is written into the DOM at runtime. A textContent
+    // assignment cannot create an element, so markup in ?q= lands as visible
+    // text. Assigning an HTML string here instead would be an XSS sink, which
+    // is why the guard test bans those APIs from this block by name.
+    emptyTerm.textContent = raw;
+    empty.hidden = !(term !== '' && shownCards === 0 && shownPrims === 0);
+
+
     // Widening has to announce too. An aria-live region defaults to
     // aria-relevant="additions text", so emptying this node on clear is a
     // removal and is NOT announced: a user could type a term, hear the count,
@@ -410,6 +511,8 @@ details ul.prims li { break-inside: avoid; }
       (term === '' ? 'Showing all ' : '') +
       shownCards + ' package' + (shownCards === 1 ? '' : 's') +
       ', ' + shownPrims + ' primitive' + (shownPrims === 1 ? '' : 's');
+
+    syncURL(raw);
   }
 
   q.addEventListener('input', filter);
@@ -477,6 +580,23 @@ details ul.prims li { break-inside: avoid; }
   // covers the other.
   openHashTarget();
   window.addEventListener('hashchange', openHashTarget);
+  // Clearing through the same path as Escape and typing, so the URL parameter
+  // is dropped by the one syncURL call at the end of filter().
+  document.getElementById('clearq').addEventListener('click', function () {
+    q.value = '';
+    filter();
+    q.focus();
+  });
+
+  /* Prime the filter from ?q= so a filtered view survives reload and can be
+     shared. Assigning to input.value is a text assignment, not a markup one:
+     the value never becomes HTML, so a crafted ?q= cannot inject anything
+     here either. Only run filter() when there is something to apply, to keep
+     the no-parameter load byte-identical in behaviour to before. */
+  try {
+    var initial = new URL(location.href).searchParams.get('q');
+    if (initial) { q.value = initial; filter(); }
+  } catch (e) { /* no URL support: the page is simply unfiltered. */ }
 })();
 </script>
 </body>
