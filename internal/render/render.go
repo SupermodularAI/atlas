@@ -20,11 +20,16 @@ import (
 //go:embed page.gohtml
 var files embed.FS
 
-// Render produces the complete page for a. No external requests: all CSS is
-// inline and there is no script or remote resource, so a generated atlas
-// opens correctly straight from disk.
+// Render produces the complete page for a. No external requests: the CSS and
+// the one script are inline and nothing is fetched, so a generated atlas opens
+// correctly straight from disk, including over file://.
 func Render(a *model.Atlas) ([]byte, error) {
-	t, err := template.ParseFS(files, "page.gohtml")
+	// cardID is the single source of truth for a card's DOM id and for the
+	// fragment that addresses it. Computing it in one place is what keeps the
+	// two byte-identical; see CardID for why that matters.
+	t, err := template.New("page.gohtml").Funcs(template.FuncMap{
+		"cardID": CardID,
+	}).ParseFS(files, "page.gohtml")
 	if err != nil {
 		return nil, fmt.Errorf("render: parse template: %w", err)
 	}

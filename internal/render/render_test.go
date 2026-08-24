@@ -157,12 +157,41 @@ func TestRenderPackageNameCannotStartHref(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(out)
-	// The constant prefix must survive, keeping the value a fragment.
-	if !strings.Contains(s, "#pkg-javascript:alert(1)") && !strings.Contains(s, "#pkg-javascript") {
-		t.Error("expected the name confined behind the #pkg- prefix")
+	// The constant prefix must survive, keeping the value a fragment. The name
+	// itself is now encoded by cardID rather than appearing literally, so assert
+	// the property -- every package href is a same-page fragment -- instead of a
+	// spelling: a colon in a name can no longer even reach the href.
+	hrefs := packageHrefs(t, s)
+	if len(hrefs) == 0 {
+		t.Fatal("no package hrefs found; the assertion below would be vacuous")
+	}
+	for _, href := range hrefs {
+		if !strings.HasPrefix(href, "#pkg-") {
+			t.Errorf("package href %q is not confined behind the #pkg- prefix", href)
+		}
 	}
 	if strings.Contains(strings.ToLower(s), `href="javascript:`) {
 		t.Error("the name escaped the prefix and became the URL scheme")
+	}
+}
+
+// packageHrefs returns every fragment href emitted by the jump index.
+func packageHrefs(t *testing.T, page string) []string {
+	t.Helper()
+	var out []string
+	rest := page
+	for {
+		i := strings.Index(rest, `<a href="#`)
+		if i == -1 {
+			return out
+		}
+		rest = rest[i+len(`<a href="`):]
+		j := strings.Index(rest, `"`)
+		if j == -1 {
+			t.Fatal("unterminated href attribute in rendered page")
+		}
+		out = append(out, rest[:j])
+		rest = rest[j:]
 	}
 }
 
@@ -1434,7 +1463,7 @@ func TestScriptResolvesHashWithoutSelectorInjection(t *testing.T) {
 // and its try/catch is load-bearing: decodeURIComponent throws URIError on a
 // malformed escape like "#pkg-%zz", which uncaught would abort the rest of the
 // script and take the search filter down with it.
-func TestRenderHrefAndIDEscapeDifferently(t *testing.T) {
+func TestRenderHrefAndIDAreByteIdentical(t *testing.T) {
 	a := sample()
 	a.Packages[0].Name = "my pkg"
 	out, err := Render(a)
@@ -1443,21 +1472,36 @@ func TestRenderHrefAndIDEscapeDifferently(t *testing.T) {
 	}
 	s := string(out)
 
-	// The premise: pin the divergence, so if html/template ever stops
-	// URL-escaping here the decode fallback's justification is re-examined
-	// rather than silently kept as cargo cult.
-	if !strings.Contains(s, `href="#pkg-my%20pkg"`) {
-		t.Error("expected the href URL-escaped; the decode fallback exists because of this")
+	// The href lands in a URL context and the id in an attribute context, and
+	// html/template escapes those differently for every character outside the
+	// unreserved set. This USED to diverge -- href="#pkg-my%20pkg" against
+	// id="pkg-my pkg" -- and every reader that took one and looked up the other
+	// silently found nothing. cardID removes the divergence at the source by
+	// emitting only unreserved characters, so the two must now be the same
+	// bytes. That equality is the whole guard: assert it directly rather than
+	// pinning either spelling, so it holds for any name and any future escaper
+	// change.
+	wantID := CardID(a.Packages[0].Source, a.Packages[0].Name)
+	if !strings.Contains(s, `id="`+wantID+`"`) {
+		t.Errorf("expected id=%q in the page", wantID)
 	}
-	if !strings.Contains(s, `id="pkg-my pkg"`) {
-		t.Error("expected the id to keep the literal space, diverging from the href")
+	if !strings.Contains(s, `href="#`+wantID+`"`) {
+		t.Errorf("expected href=%q in the page", "#"+wantID)
+	}
+	for _, href := range packageHrefs(t, s) {
+		frag := strings.TrimPrefix(href, "#")
+		if !strings.Contains(s, `id="`+frag+`"`) {
+			t.Errorf("href %q has no byte-identical id: getElementById would return null, "+
+				"which is exactly the defect cardID exists to prevent", href)
+		}
 	}
 
-	// The consequence: the script must handle it.
+	// The decode fallback is retained for hashes this page did not emit (an
+	// over-encoding mail or chat client), so it should still be there -- but it
+	// is no longer what makes a name with a space work.
 	body := scriptBody(t, s)
 	if !strings.Contains(body, "decodeURIComponent(raw)") {
-		t.Error("no decodeURIComponent fallback: a package name containing a space or " +
-			"non-ASCII character percent-encodes in the href and would never match its id")
+		t.Error("expected the decode fallback retained for externally re-encoded hashes")
 	}
 
 	// Scoped to cardForHash's own body, not the whole script. Unscoped, ANY

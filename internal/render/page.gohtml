@@ -291,7 +291,7 @@ details ul.prims li { break-inside: avoid; }
   <ul class="index">
     {{ range $pkg := .Packages }}
     <li>
-      <a href="#pkg-{{ $pkg.Name }}"><span class="mono">{{ $pkg.Name }}</span></a>
+      <a href="#{{ cardID $pkg.Source $pkg.Name }}"><span class="mono">{{ $pkg.Name }}</span></a>
       {{ if eq $pkg.Access "public" }}<span class="meta">{{ len $pkg.Primitives }}</span>
       {{ else if eq $pkg.Access "excluded" }}<span class="tag excluded">withheld</span>
       {{ else }}<span class="tag restricted">unreadable</span>{{ end }}
@@ -314,7 +314,7 @@ details ul.prims li { break-inside: avoid; }
   {{ else }}
     {{ if $src.Owner }}<p class="meta">Owner {{ $src.Owner }}{{ if $src.Version }} · version {{ $src.Version }}{{ end }}</p>{{ end }}
     {{ range $pkg := $.Packages }}{{ if eq $pkg.Source $src.Name }}
-      <div class="card{{ if eq $pkg.Access "excluded" }} withheld excluded{{ else if eq $pkg.Access "restricted" }} withheld restricted{{ end }}" id="pkg-{{ $pkg.Name }}">
+      <div class="card{{ if eq $pkg.Access "excluded" }} withheld excluded{{ else if eq $pkg.Access "restricted" }} withheld restricted{{ end }}" id="{{ cardID $pkg.Source $pkg.Name }}">
         <h3>{{ $pkg.Name }}
           {{ if eq $pkg.Access "excluded" }}<span class="tag excluded">withheld by descriptor</span>{{ end }}
           {{ if eq $pkg.Access "restricted" }}<span class="tag restricted">access restricted</span>{{ end }}
@@ -464,6 +464,15 @@ details ul.prims li { break-inside: avoid; }
       }
     });
 
+    // An index row follows the visibility of the card it points at. This reads
+    // the href and looks the id up directly, which is only correct because
+    // cardID emits unreserved characters exclusively, so the two are the same
+    // bytes — getAttribute returns the raw attribute and getElementById does
+    // no percent-decoding, so any divergence would silently return null here.
+    // It did: before cardID, a package named "data ops" got
+    // href="#pkg-data%20ops" against id="pkg-data ops", the lookup missed, and
+    // the row stayed painted while its card was hidden and the count excluded
+    // it. Keep the identifier scheme and this line in the same thought.
     indexItems.forEach(function (li) {
       var a = li.querySelector('a');
       var target = a && document.getElementById(a.getAttribute('href').slice(1));
@@ -527,21 +536,23 @@ details ul.prims li { break-inside: avoid; }
   // read as selector syntax. getElementById takes the string literally, so
   // there is nothing to escape and no escaping to get wrong.
   //
-  // The decode step is the load-bearing part, not a nicety. The same package
-  // name is escaped by html/template in two different contexts and comes out
-  // as two different strings: the href gets URL escaping ("#pkg-my%20pkg",
-  // "#pkg-caf%c3%a9") while the id gets attribute escaping and keeps the
-  // literal character ("pkg-my pkg", "pkg-café"). location.hash reports what
-  // the href said, so the raw lookup misses every name containing a space, an
-  // ampersand, a quote or any non-ASCII character. Try raw first — a plain
-  // ASCII name needs no decode and this keeps the common path exact — then
-  // fall back to the decoded form.
+  // The raw lookup is now the correct path, not a lucky one. Ids come from
+  // cardID, which emits only unreserved URI characters, so html/template's URL
+  // escaper (the href) and its attribute escaper (the id) both pass them
+  // through unchanged and location.hash reports exactly the id. This function
+  // used to have to reconcile the two encodings; it no longer does.
   //
-  // decodeURIComponent throws URIError on a malformed escape ("#pkg-%zz",
-  // reachable from a hand-edited or truncated URL). Uncaught at this level it
-  // would abort the rest of this function and, on the initial call below, the
-  // listener registrations after it — silently taking the search filter down
-  // with it. Hence the catch.
+  // The decode fallback is kept anyway, deliberately. It is no longer
+  // load-bearing for anything this page emits, but location.hash is not ours:
+  // a mailer or chat client that over-encodes a shared link can deliver
+  // "#pkg-a_5Fb" as "#pkg-a%5F5Fb", and one extra lookup costs nothing to
+  // still resolve it.
+  //
+  // The catch, by contrast, remains load-bearing. decodeURIComponent throws
+  // URIError on a malformed escape ("#pkg-%zz", reachable from a hand-edited
+  // or truncated URL). Uncaught at this level it would abort the rest of this
+  // function and, on the initial call below, the listener registrations after
+  // it — silently taking the search filter down with it.
   function cardForHash() {
     var raw = location.hash.slice(1);
     if (raw === '') return null;
