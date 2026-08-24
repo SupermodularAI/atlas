@@ -187,7 +187,12 @@ details ul.prims li { break-inside: avoid; }
          silent to a screen reader: the input keeps focus while typing, so nothing
          moves the virtual cursor over this span and the result is never announced.
          polite (not assertive) because it fires on every keystroke and must queue
-         behind the user's own typing rather than interrupt it. -->
+         behind the user's own typing rather than interrupt it.
+         Starts empty and stays empty until the first interaction: filter() does
+         not run at load, so nothing is announced when the page opens. Once the
+         user has filtered, clearing reports counts rather than emptying — see the
+         note on count.textContent. The node is mutated in place and never
+         replaced, which is the pattern that actually announces. -->
     <span class="meta" id="qcount" role="status" aria-live="polite"></span>
     <button type="button" id="expand">Expand all</button>
     <button type="button" id="collapse">Collapse all</button>
@@ -343,7 +348,20 @@ details ul.prims li { break-inside: avoid; }
       li.hidden = !!(target && target.hidden);
     });
 
-    count.textContent = term === '' ? '' :
+    // Widening has to announce too. An aria-live region defaults to
+    // aria-relevant="additions text", so emptying this node on clear is a
+    // removal and is NOT announced: a user could type a term, hear the count,
+    // press Escape, and hear silence with no confirmation the filter lifted.
+    // The unfiltered branch therefore reports the same counts rather than ''.
+    // shownCards/shownPrims are already the full-set totals when term is empty,
+    // because every row hits — no second counting path is needed.
+    //
+    // "Showing all" is scoped to what this page lists, deliberately not to what
+    // the company has: a withheld package's primitives are not listed here, so
+    // wording like "all 73 primitives" would widen the claim past what Atlas
+    // can support. It describes the filter state, not completeness.
+    count.textContent =
+      (term === '' ? 'Showing all ' : '') +
       shownCards + ' package' + (shownCards === 1 ? '' : 's') +
       ', ' + shownPrims + ' primitive' + (shownPrims === 1 ? '' : 's');
   }

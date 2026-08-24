@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -258,9 +259,22 @@ func indexRowDisplayRules(css string) []string {
 // the plain rule to `nav ul.index li` (0,2,3), which silently outranks the
 // override and stops the filter hiding anything — while every substring
 // assertion in this file keeps passing, because the override text is still
-// present. So assert the cascade property directly: the [hidden] rule must be
-// the LAST index rule that sets display, and no competing index rule may carry a
-// descendant prefix the override lacks.
+// present.
+//
+// Two assertions, and their scope is deliberately unequal:
+//
+//   - ORDER (fully guarded): the [hidden] rule must be the LAST row rule that
+//     sets display. This is the practical break vector — any same-specificity
+//     rule placed after the override beats it on order alone.
+//   - SPECIFICITY (guarded for `nav` only): a descendant prefix beats the
+//     override only if it adds a class or id token, since (0,2,2) already has
+//     two classes. `main ul.index li` is (0,1,3) and LOSES — measured in a
+//     browser, zero ghost rows — so flagging every prefix would fail the test on
+//     a non-defect. `nav` is called out because the landmark wrapper this branch
+//     added is what makes that particular rewrite tempting.
+//
+// The narrow half is scoped, not decorative: this test catches a rule inserted
+// after the override that the older TestIndexRowsCanActuallyHide misses.
 //
 // This tests CSS, which the project generally does not. The carve-out is the
 // same one the [hidden] test already relies on: this declaration is load-bearing
@@ -324,6 +338,82 @@ func TestRenderAnnouncesFilterResultCount(t *testing.T) {
 	}
 }
 
+// Widening the filter must announce, not just narrowing. An aria-live region
+// defaults to aria-relevant="additions text", so setting textContent to the
+// empty string on clear is a REMOVAL and is not announced: a user types a term,
+// hears the count, presses Escape, and hears silence — no confirmation the
+// filter lifted. The unfiltered branch must therefore produce non-empty text.
+//
+// Asserted on the script source because this is a behaviour of the static
+// filter, and the project has no browser in its gate. The outcome (each state's
+// announced string, and that the node is mutated in place rather than replaced)
+// was verified separately in a real browser.
+func TestFilterAnnouncesWideningNotOnlyNarrowing(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	i := strings.Index(s, "count.textContent")
+	if i == -1 {
+		t.Fatal("the filter never assigns count.textContent: nothing is announced at all")
+	}
+	stmt := s[i:]
+	if end := strings.Index(stmt, ";"); end != -1 {
+		stmt = stmt[:end]
+	}
+	// The empty-string branch is the defect: `term === '' ? '' : ...` leaves the
+	// cleared state silent.
+	flat := strings.ReplaceAll(stmt, " ", "")
+	if strings.Contains(flat, "term===''?''") {
+		t.Errorf("the cleared state assigns the empty string, which an aria-live region "+
+			"does not announce (default aria-relevant=\"additions text\"), so lifting the "+
+			"filter is silent; got: %q", stmt)
+	}
+	if !strings.Contains(stmt, "Showing all") {
+		t.Errorf("expected the unfiltered state to announce a non-empty count; got: %q", stmt)
+	}
+	// The node must be mutated in place. Replacing or re-creating a live region
+	// does not announce, so a refactor to innerHTML/replaceWith would silently
+	// undo this fix — and would breach the template's no-innerHTML rule besides.
+	for _, bad := range []string{"replaceWith", "createElement('span')", "innerHTML"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("live region must be mutated in place via textContent; found %q", bad)
+		}
+	}
+}
+
+// The claim boundary (§9) reaches the announced text too. "Showing all N
+// primitives" must describe what this page lists, never what the company has:
+// a withheld package's primitives are deliberately not listed, so wording that
+// implies exhaustive coverage would widen the claim past what Atlas can support.
+func TestFilterCountClaimsOnlyWhatThePageLists(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	i := strings.Index(s, "count.textContent")
+	if i == -1 {
+		t.Fatal("the filter never assigns count.textContent")
+	}
+	stmt := s[i:]
+	if end := strings.Index(stmt, ";"); end != -1 {
+		stmt = stmt[:end]
+	}
+	// The counts name what is on the page. Anything asserting completeness of
+	// the company's published set, or approval, is out of bounds.
+	for _, forbidden := range []string{
+		"everything", "complete", "all published", "approved", "reviewed", "entire",
+	} {
+		if strings.Contains(strings.ToLower(stmt), forbidden) {
+			t.Errorf("announced count contains %q, which claims more than Atlas can "+
+				"support — withheld packages' primitives are not listed; got: %q",
+				forbidden, stmt)
+		}
+	}
+}
+
 // The jump index is the page's primary navigation. As a bare <ul> it announces
 // as a plain list and is absent from the landmark rotor, so it is reachable only
 // by reading linearly from the top of the page.
@@ -351,13 +441,44 @@ func TestRenderJumpIndexIsALabelledNavLandmark(t *testing.T) {
 	if end := strings.Index(navTag, ">"); end != -1 {
 		navTag = navTag[:end]
 	}
-	if !strings.Contains(navTag, `aria-label=`) {
-		t.Errorf("the nav landmark needs an aria-label to distinguish it from any other "+
-			"navigation on the page; got: %q", navTag)
+	// The VALUE, not just the attribute. `aria-label=""` leaves the landmark with
+	// no accessible name — the precise defect this test exists to prevent — while
+	// still satisfying a presence check.
+	label := attrValue(navTag, "aria-label")
+	if strings.TrimSpace(label) == "" {
+		t.Errorf("the nav landmark's aria-label is empty, so it has no accessible name "+
+			"and announces as an anonymous navigation region; got: %q", navTag)
 	}
-	if !strings.Contains(s[ul:], "</nav>") {
-		t.Error("the nav landmark is never closed after ul.index")
+	if label != "Packages" {
+		t.Errorf("nav aria-label = %q, want %q: the label names what the landmark "+
+			"contains, which is how a user picks it out of the landmark rotor", label, "Packages")
 	}
+	// Close on the nav that actually wraps this list. Searching the whole tail
+	// would be satisfied by any unrelated later </nav> if a second one is added.
+	tail := s[ul:]
+	closeIdx := strings.Index(tail, "</nav>")
+	if closeIdx == -1 {
+		t.Fatal("the nav landmark is never closed after ul.index")
+	}
+	if openIdx := strings.Index(tail, "<nav"); openIdx != -1 && openIdx < closeIdx {
+		t.Error("a second <nav> opens after ul.index before the wrapping one closes: " +
+			"the closure assertion is no longer pinned to this landmark")
+	}
+}
+
+// attrValue returns the value of a double-quoted attribute in a tag, or "" if
+// the attribute is absent or not double-quoted.
+func attrValue(tag, name string) string {
+	i := strings.Index(tag, name+`="`)
+	if i == -1 {
+		return ""
+	}
+	rest := tag[i+len(name)+2:]
+	end := strings.Index(rest, `"`)
+	if end == -1 {
+		return ""
+	}
+	return rest[:end]
 }
 
 // WCAG 2.5.8 (Target Size Minimum) sets a 24px floor. The index anchors were
@@ -387,17 +508,106 @@ func TestIndexLinksMeetTargetSizeMinimum(t *testing.T) {
 		rule = rule[:end]
 	}
 	flat := strings.ReplaceAll(rule, " ", "")
-	// Vertical padding inside the anchor is what the criterion measures.
-	if !strings.Contains(flat, "padding:") {
-		t.Errorf("ul.index a sets no padding, so the target stays at its ~22px line "+
-			"box, under the WCAG 2.5.8 24px floor; got: %q", rule)
+
+	// Compute the budget rather than assert that a `padding` property merely
+	// exists. Asserting presence lets `padding: .001rem 0` pass while the target
+	// drops back under the floor — the exact defect this test is named for.
+	//
+	// Assumes the initial root font size of 16px. .88rem and .25rem are both
+	// rem-relative, so they resolve against the root, NOT against body's 15px.
+	// 14.08 * 1.55 + 2*4 = 29.82px, which matches the height measured in a real
+	// browser — the arithmetic is cross-checked against reality, not invented.
+	const rootPx = 16.0
+	fontRem := declRem(t, css, "ul.index li", "font-size")
+	padRem := verticalPaddingRem(t, rule)
+	lineHeight := bodyLineHeight(t, css)
+
+	got := fontRem*rootPx*lineHeight + 2*padRem*rootPx
+	if got < 24 {
+		t.Errorf("index link target computes %.2fpx, under the WCAG 2.5.8 (Target Size "+
+			"Minimum) 24px floor: font-size %.3grem * %gpx * line-height %.3g + 2 * "+
+			"padding %.3grem * %gpx. Eight adjacent links in a dense grid is exactly "+
+			"the case that criterion exists for.",
+			got, fontRem, rootPx, lineHeight, padRem, rootPx)
 	}
+
 	// Without flex:1 the anchor does not fill the row and the gap beside a short
 	// package name stays dead space.
 	if !strings.Contains(flat, "flex:1") {
 		t.Errorf("ul.index a needs flex:1 to fill the row — display:block is inert on a "+
 			"flex item, leaving the gap beside a short name unclickable; got: %q", rule)
 	}
+}
+
+// declRem reads a rem-valued declaration out of the named rule.
+func declRem(t *testing.T, css, selector, prop string) float64 {
+	t.Helper()
+	i := strings.Index(css, selector+" {")
+	if i == -1 {
+		t.Fatalf("no %q rule in the stylesheet", selector)
+	}
+	body := css[i:]
+	if end := strings.Index(body, "}"); end != -1 {
+		body = body[:end]
+	}
+	j := strings.Index(body, prop+":")
+	if j == -1 {
+		t.Fatalf("%q sets no %s", selector, prop)
+	}
+	return parseRem(t, body[j+len(prop)+1:])
+}
+
+// verticalPaddingRem reads the top/bottom component of a `padding` shorthand.
+// The rule uses the two-value form (`padding: <vertical> <horizontal>`), so the
+// first component is the one the target-size budget depends on.
+func verticalPaddingRem(t *testing.T, rule string) float64 {
+	t.Helper()
+	i := strings.Index(rule, "padding:")
+	if i == -1 {
+		t.Fatal("ul.index a sets no padding, so the target stays at its bare line box, " +
+			"under the WCAG 2.5.8 24px floor")
+	}
+	return parseRem(t, rule[i+len("padding:"):])
+}
+
+// bodyLineHeight reads the unitless line-height out of body's `font` shorthand
+// (`font: 15px/1.55 ...`), which is what sets the anchor's line box.
+func bodyLineHeight(t *testing.T, css string) float64 {
+	t.Helper()
+	i := strings.Index(css, "font: ")
+	if i == -1 {
+		t.Fatal("no body `font` shorthand: cannot determine the line box")
+	}
+	s := css[i+len("font: "):]
+	slash := strings.Index(s, "/")
+	if slash == -1 {
+		t.Fatal("body `font` shorthand carries no /line-height")
+	}
+	s = s[slash+1:]
+	end := strings.IndexAny(s, " ;\n")
+	if end != -1 {
+		s = s[:end]
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+	if err != nil {
+		t.Fatalf("unparseable line-height %q: %v", s, err)
+	}
+	return v
+}
+
+// parseRem takes the leading rem length off a declaration value.
+func parseRem(t *testing.T, s string) float64 {
+	t.Helper()
+	s = strings.TrimSpace(s)
+	end := strings.Index(s, "rem")
+	if end == -1 {
+		t.Fatalf("expected a rem length, got %q", s)
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(s[:end]), 64)
+	if err != nil {
+		t.Fatalf("unparseable rem length %q: %v", s[:end], err)
+	}
+	return v
 }
 
 func TestRenderDistinguishesExcludedFromRestricted(t *testing.T) {
