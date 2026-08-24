@@ -416,3 +416,362 @@ sources:
 		t.Error("the real resolved SHA must appear on the page")
 	}
 }
+
+// --- Hash navigation and anchor landing ---------------------------------
+//
+// These pin template text, not runtime behaviour: the <script> never executes
+// in `go test`, so like TestIndexRowsCanActuallyHide these assert the
+// structural precondition a browser needs, and would still pass against a
+// handler that was wired up but subtly wrong. The properties they DO pin are
+// the ones a refactor silently drops.
+
+// scriptBody returns the text between <script> and </script>, so a test can
+// assert on the script region alone. Asserting page-wide would let a match
+// anywhere in harvested body text satisfy (or falsely fail) the check.
+func scriptBody(t *testing.T, s string) string {
+	t.Helper()
+	start := strings.Index(s, "<script>")
+	end := strings.Index(s, "</script>")
+	if start == -1 || end == -1 || end < start {
+		t.Fatalf("rendered page missing a well-formed <script>...</script> region")
+	}
+	return s[start+len("<script>") : end]
+}
+
+// Constraint: the script stays entirely static. A {{ }} action inside it would
+// interpolate a harvested string into a JavaScript context, where html/template
+// applies JS escaping rather than HTML escaping — a different guard with
+// different failure modes, and one the rest of this package's escaping tests
+// do not cover. Keeping the script template-free means the single HTML
+// escaping guard remains the only one that has to be correct.
+//
+// Reads the TEMPLATE SOURCE, not Render's output. This distinction is the whole
+// test: executing the template consumes the braces, so `{{ .Company }}` inside
+// the script would arrive in the output as `acme` and an assertion on the
+// rendered page could never observe it. Verified by mutation — the same check
+// against Render's output passes with a template action deliberately inserted.
+func TestScriptContainsNoTemplateActions(t *testing.T) {
+	src, err := files.ReadFile("page.gohtml")
+	if err != nil {
+		t.Fatalf("reading the embedded template source: %v", err)
+	}
+	body := scriptBody(t, string(src))
+	if strings.Contains(body, "{{") || strings.Contains(body, "}}") {
+		t.Error("the <script> block must contain no Go template action: harvested " +
+			"data may only reach it via textContent from already-escaped DOM")
+	}
+}
+
+// Constraint: no sink that turns a string back into markup or code. The script
+// is allowed to READ harvested text (textContent); it must never write it
+// anywhere that would re-parse it.
+func TestScriptUsesNoUnsafeSinks(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := scriptBody(t, string(out))
+	for _, sink := range []string{"innerHTML", "outerHTML", "eval(", "document.write", "insertAdjacentHTML", "Function("} {
+		if strings.Contains(body, sink) {
+			t.Errorf("the <script> block must not use %q — harvested text must never be re-parsed as markup or code", sink)
+		}
+	}
+}
+
+// A jump-index link scrolled to the card but left its <details> closed, so
+// navigating to a package showed none of its primitives, while the search path
+// already auto-opened a matching package. Both entry points must be wired: a
+// click on an index link fires hashchange, but loading a URL that already
+// carries a hash does not, so one listener cannot cover the other.
+func TestScriptOpensDetailsForHashTarget(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := scriptBody(t, string(out))
+
+	if !strings.Contains(body, "hashchange") {
+		t.Error("no hashchange listener: clicking a jump-index link would scroll to a " +
+			"package and leave its primitives collapsed")
+	}
+	// The handler must also run once at load, otherwise a pasted or bookmarked
+	// deep link lands on a closed card.
+	//
+	// Anchored to a bare statement-position call, not just the name: the string
+	// "openHashTarget()" also occurs in the function's own DEFINITION
+	// ("function openHashTarget() {"), so a plain Contains check is satisfied by
+	// declaring the function and never calling it. Verified by mutation —
+	// deleting the load-time call left that weaker form passing.
+	reg := strings.Index(body, "window.addEventListener('hashchange'")
+	if reg == -1 {
+		t.Fatal("expected the hashchange listener registered on window")
+	}
+	if !strings.Contains(body[:reg], "\n  openHashTarget();") {
+		t.Error("openHashTarget must also be invoked directly at load: loading a URL " +
+			"that already has a hash fires no hashchange event, so the listener " +
+			"alone leaves a deep link's card collapsed")
+	}
+
+	// It must actually open the details, not merely locate the card. Scoped to
+	// the handler body: the pre-existing search filter also contains
+	// "d.open = true", so a page-wide check passes even if this handler does
+	// nothing at all. Verified by mutation — gutting the handler left the
+	// unscoped form passing on the search code's match.
+	fn := strings.Index(body, "function openHashTarget")
+	if fn == -1 {
+		t.Fatal("expected an openHashTarget function")
+	}
+	handler := body[fn:]
+	if end := strings.Index(handler, "\n  }"); end != -1 {
+		handler = handler[:end]
+	}
+	if !strings.Contains(handler, "d.open = true") {
+		t.Errorf("the hash handler must open the target card's <details>, got: %q", handler)
+	}
+}
+
+// Security constraint: the hash is attacker-influenced text (a package name
+// from a marketplace manifest round-trips through it). It must be resolved with
+// getElementById, which treats its argument as a literal id, and never handed
+// to querySelector, where a name containing a quote or bracket is parsed as
+// selector syntax.
+func TestScriptResolvesHashWithoutSelectorInjection(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := scriptBody(t, string(out))
+
+	if !strings.Contains(body, "document.getElementById(raw)") {
+		t.Error("the hash must be resolved via getElementById, which needs no escaping")
+	}
+	// No querySelector call may take the hash. Scoped to the hash-resolving
+	// function: querySelector is legitimate elsewhere with constant selectors.
+	fn := body
+	if i := strings.Index(body, "function cardForHash"); i != -1 {
+		fn = body[i:]
+		if j := strings.Index(fn, "\n  }"); j != -1 {
+			fn = fn[:j]
+		}
+	}
+	for _, bad := range []string{"querySelector(raw", "querySelector('#' +", `querySelector("#" +`, "querySelector(location", "querySelector('#'+"} {
+		if strings.Contains(fn, bad) {
+			t.Errorf("the hash reached a selector via %q — a crafted package name would break the selector", bad)
+		}
+	}
+	// The result must be constrained to a card, or a hash naming any other
+	// element on the page (#q, #expand) would have its subtree searched.
+	if !strings.Contains(fn, "classList.contains('card')") {
+		t.Error("the hash target must be confirmed to be a card before it is acted on")
+	}
+}
+
+// The same package name is escaped twice, differently: html/template gives the
+// href URL escaping ("#pkg-my%20pkg") and the id attribute escaping, which
+// keeps the literal character ("pkg-my pkg"). location.hash reports the href
+// form, so a raw getElementById misses every name containing a space, an
+// ampersand, a quote, or any non-ASCII character — the fix would work on an
+// ASCII fixture and fail in production. The decode fallback closes that gap,
+// and its try/catch is load-bearing: decodeURIComponent throws URIError on a
+// malformed escape like "#pkg-%zz", which uncaught would abort the rest of the
+// script and take the search filter down with it.
+func TestRenderHrefAndIDEscapeDifferently(t *testing.T) {
+	a := sample()
+	a.Packages[0].Name = "my pkg"
+	out, err := Render(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+
+	// The premise: pin the divergence, so if html/template ever stops
+	// URL-escaping here the decode fallback's justification is re-examined
+	// rather than silently kept as cargo cult.
+	if !strings.Contains(s, `href="#pkg-my%20pkg"`) {
+		t.Error("expected the href URL-escaped; the decode fallback exists because of this")
+	}
+	if !strings.Contains(s, `id="pkg-my pkg"`) {
+		t.Error("expected the id to keep the literal space, diverging from the href")
+	}
+
+	// The consequence: the script must handle it.
+	body := scriptBody(t, s)
+	if !strings.Contains(body, "decodeURIComponent(raw)") {
+		t.Error("no decodeURIComponent fallback: a package name containing a space or " +
+			"non-ASCII character percent-encodes in the href and would never match its id")
+	}
+
+	// Scoped to cardForHash's own body, not the whole script. Unscoped, ANY
+	// try/catch anywhere in the script satisfies this — so a refactor that adds
+	// an unrelated guard (say around history.replaceState, which throws on
+	// file://) while dropping the one around decodeURIComponent would leave the
+	// suite green with the guard gone. That is not hypothetical: it is the
+	// mutation this assertion is verified against.
+	fn := strings.Index(body, "function cardForHash")
+	if fn == -1 {
+		t.Fatal("expected a cardForHash function")
+	}
+	resolver := body[fn:]
+	if end := strings.Index(resolver, "\n  }"); end != -1 {
+		resolver = resolver[:end]
+	}
+	if !strings.Contains(resolver, "decodeURIComponent") {
+		t.Fatalf("the decode must live inside cardForHash; scoping is wrong, got: %q", resolver)
+	}
+	if !strings.Contains(resolver, "catch") {
+		t.Errorf("decodeURIComponent throws URIError on a malformed escape (\"#pkg-%%zz\"); "+
+			"uncaught it would abort the script and disable the search filter. "+
+			"cardForHash body: %q", resolver)
+	}
+}
+
+// The jump target landed flush against the viewport edge (measured
+// targetTop=0px), reading as clipped rather than as the thing just navigated
+// to. scroll-margin-top reserves the gap. Deliberately not a `display`
+// declaration: cards are toggled with the hidden attribute by the filter, and
+// an author `display` on .card would beat the UA [hidden] rule and silently
+// break filtering (see TestIndexRowsCanActuallyHide).
+func TestCardHasScrollMarginForAnchorLanding(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(strings.ReplaceAll(s, " ", ""), "scroll-margin-top:") {
+		t.Error("no scroll-margin-top: a jump-index target lands flush at the viewport edge")
+	}
+	// It must be on .card — the element the jump index actually targets.
+	idx := strings.Index(s, ".card {")
+	if idx == -1 {
+		t.Fatal("no .card rule in the stylesheet")
+	}
+	rule := s[idx:]
+	if end := strings.Index(rule, "}"); end != -1 {
+		rule = rule[:end]
+	}
+	if !strings.Contains(strings.ReplaceAll(rule, " ", ""), "scroll-margin-top:") {
+		t.Errorf("scroll-margin-top must be on the .card rule (the jump target), got: %q", rule)
+	}
+}
+
+// Scrolling alone leaves no trace of which card was targeted, so on a dense
+// page the reader has to re-find the name they clicked.
+func TestCardTargetIsVisuallyAcknowledged(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, ".card:target") {
+		t.Error("no :target rule: nothing confirms which card the jump landed on")
+	}
+	// Anchored to a top-of-line selector ("\n.card:target {"), not a bare
+	// substring. The same selector legitimately appears twice: the base rule and
+	// the copy nested inside @media (prefers-reduced-motion), indented two
+	// spaces. An unanchored search falls through to the nested one when the base
+	// rule is deleted, so the test would be satisfied by the accessibility
+	// fallback alone and pass with the default-path highlight gone. Verified by
+	// mutation — deleting the base rule passed before this anchor was added.
+	idx := strings.Index(s, "\n.card:target {")
+	if idx == -1 {
+		t.Fatal("expected a top-level .card:target rule block (a rule inside a media " +
+			"query does not acknowledge the landing for the default path)")
+	}
+	idx++ // step past the anchoring newline
+	rule := s[idx:]
+	if end := strings.Index(rule, "}"); end != -1 {
+		rule = rule[:end]
+	}
+	// It must acknowledge visually without touching layout. A `display` here
+	// would beat the UA [hidden] rule and break the filter's ability to hide
+	// a card (constraint: any display rule on a .hidden-toggled element needs
+	// a matching [hidden] override).
+	if strings.Contains(strings.ReplaceAll(rule, " ", ""), "display:") {
+		t.Error("the :target rule must not set display — .card is toggled with the " +
+			"hidden attribute, and an author display would beat the UA [hidden] rule")
+	}
+	// The acknowledgement may be painted directly by this rule, or delegated to
+	// a @keyframes animation it names. Follow the indirection rather than
+	// requiring the paint inline: after Finding 1 the ring is drawn by
+	// @keyframes (a transition had no usable from-state on :target), so an
+	// inline-only check would reject the correct fix.
+	paints := func(css string) bool {
+		return strings.Contains(css, "outline") || strings.Contains(css, "box-shadow") ||
+			strings.Contains(css, "background")
+	}
+	if !paints(rule) {
+		name := ""
+		if i := strings.Index(rule, "animation:"); i != -1 {
+			fields := strings.Fields(rule[i+len("animation:"):])
+			if len(fields) > 0 {
+				name = fields[0]
+			}
+		}
+		if name == "" {
+			t.Fatalf("the :target rule neither paints an acknowledgement nor names an "+
+				"animation that could, got: %q", rule)
+		}
+		kf := strings.Index(s, "@keyframes "+name)
+		if kf == -1 {
+			t.Fatalf("the :target rule animates %q but no such @keyframes block exists — "+
+				"the highlight would never paint", name)
+		}
+		block := s[kf:]
+		if end := strings.Index(block, "\n}"); end != -1 {
+			block = block[:end]
+		}
+		// The keyframes must actually paint, and must not animate layout: a
+		// `display` here would reach the same hidden-toggled .card and beat the
+		// UA [hidden] rule, exactly as an inline declaration would.
+		if strings.Contains(strings.ReplaceAll(block, " ", ""), "display:") {
+			t.Errorf("the @keyframes must not animate display — .card is toggled with the "+
+				"hidden attribute, got: %q", block)
+		}
+		if !paints(block) {
+			t.Errorf("@keyframes %s must paint a visible acknowledgement, got: %q", name, block)
+		}
+	}
+}
+
+// Any motion must be disableable by a reader who asked not to be animated —
+// and disabling it must not cost them the acknowledgement itself.
+//
+// The original :target rule used `transition`, which was the Finding-1 defect:
+// :target offers no usable from-state, so the highlight ran backwards. The fix
+// is a @keyframes animation with explicit endpoints, so this test pins
+// `animation: none` as the kill switch. It deliberately checks BOTH halves —
+// motion off AND the ring still painted — because an earlier version of the
+// reduced-motion path was strictly BETTER than the animated one, which is what
+// exposed the animation as the bug. Losing the static fallback would invert
+// that failure instead of fixing it.
+func TestTargetMotionRespectsReducedMotion(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "animation") && !strings.Contains(s, "transition") {
+		return // No motion at all is a valid way to satisfy the requirement.
+	}
+	if !strings.Contains(s, "prefers-reduced-motion: reduce") {
+		t.Fatal("the stylesheet animates but has no prefers-reduced-motion block")
+	}
+	idx := strings.Index(s, "prefers-reduced-motion: reduce")
+	block := s[idx:]
+	if end := strings.Index(block, "\n}\n"); end != -1 {
+		block = block[:end]
+	}
+	flat := strings.ReplaceAll(block, " ", "")
+
+	// Half one: the motion is actually switched off, not merely shortened.
+	if !strings.Contains(flat, "animation:none") && !strings.Contains(flat, "transition:none") {
+		t.Errorf("the reduced-motion block must switch the motion off, got: %q", block)
+	}
+	// Half two: the acknowledgement survives. Without this, `animation: none`
+	// leaves a reduced-motion reader no marker at all — they would be worse
+	// off than an animated reader, not calmer.
+	if !strings.Contains(flat, "box-shadow:") && !strings.Contains(flat, "outline:") {
+		t.Errorf("the reduced-motion block must still paint a static acknowledgement, "+
+			"or disabling motion removes the landing marker entirely, got: %q", block)
+	}
+}

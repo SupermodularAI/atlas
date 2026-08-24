@@ -35,6 +35,52 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-
 .card {
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
   padding: 1rem 1.1rem; margin: .75rem 0;
+  /* A jump-index link scrolls the card to the very top of the viewport, where
+     its heading sits flush against the edge and reads as clipped rather than
+     as the thing you navigated to. Keep a little air above the anchor target.
+     Deliberately NOT a `display` declaration: cards are toggled with the
+     hidden attribute by the filter, and any author `display` on .card would
+     beat the UA [hidden] rule and require a .card[hidden] override (see the
+     ul.index li[hidden] note above). scroll-margin carries no such hazard. */
+  scroll-margin-top: 1.5rem;
+}
+
+/* Scrolling alone leaves no trace of WHICH card was targeted, so on a dense
+   page the eye has to re-find the package name it just clicked. A tinted ring
+   marks the landing and fades out.
+
+   An animation with an explicit `from`, not a transition. A transition
+   interpolates between an existing value and a new one, and :target has no
+   usable from-state to offer: outline-style goes none -> solid, which is
+   discrete and paints instantly, while outline-color starts at its initial
+   value currentColor — the near-black text colour. Transitioning outline-color
+   therefore ran the highlight BACKWARDS, snapping a black ring on immediately
+   and fading it INTO accent blue, then leaving it drawn for as long as the
+   hash matched. Measured: rgb(26,26,25) at t=2ms, still rgb(43,95,217) at
+   t=6000ms. @keyframes states both ends explicitly, so there is nothing to
+   infer and the fade genuinely ends.
+
+   box-shadow, not outline, because a shadow interpolates to `transparent`
+   cleanly. Both are layout-inert, which is the constraint that matters here:
+   neither may set `display`, or it would beat the UA [hidden] rule and break
+   the filter's ability to hide a card (see the ul.index li[hidden] note). */
+.card:target {
+  animation: target-ack 2s ease-out 1;
+}
+@keyframes target-ack {
+  from { box-shadow: 0 0 0 2px var(--accent); }
+  to   { box-shadow: 0 0 0 2px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Kill the motion, but keep the acknowledgement: a reader who asked not to
+     be animated still needs to see which card they landed on, so the ring is
+     restated as a static shadow rather than simply dropped. Without that
+     restatement `animation: none` alone would leave them with no marker at
+     all — worse than the animated path, not merely calmer than it. */
+  .card:target {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--accent);
+  }
 }
 .card.withheld { background: var(--lock-bg); }
 .card.excluded { border-left: 3px solid var(--warn-border); }
@@ -321,6 +367,67 @@ details ul.prims li { break-inside: avoid; }
   q.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { q.value = ''; filter(); }
   });
+
+  // Resolve the card a location.hash names, or null.
+  //
+  // getElementById, never querySelector: package names are external input from
+  // a marketplace manifest, and a name containing a quote or bracket would be
+  // read as selector syntax. getElementById takes the string literally, so
+  // there is nothing to escape and no escaping to get wrong.
+  //
+  // The decode step is the load-bearing part, not a nicety. The same package
+  // name is escaped by html/template in two different contexts and comes out
+  // as two different strings: the href gets URL escaping ("#pkg-my%20pkg",
+  // "#pkg-caf%c3%a9") while the id gets attribute escaping and keeps the
+  // literal character ("pkg-my pkg", "pkg-café"). location.hash reports what
+  // the href said, so the raw lookup misses every name containing a space, an
+  // ampersand, a quote or any non-ASCII character. Try raw first — a plain
+  // ASCII name needs no decode and this keeps the common path exact — then
+  // fall back to the decoded form.
+  //
+  // decodeURIComponent throws URIError on a malformed escape ("#pkg-%zz",
+  // reachable from a hand-edited or truncated URL). Uncaught at this level it
+  // would abort the rest of this function and, on the initial call below, the
+  // listener registrations after it — silently taking the search filter down
+  // with it. Hence the catch.
+  function cardForHash() {
+    var raw = location.hash.slice(1);
+    if (raw === '') return null;
+    var el = document.getElementById(raw);
+    if (!el) {
+      var decoded;
+      try {
+        decoded = decodeURIComponent(raw);
+      } catch (e) {
+        return null;
+      }
+      if (decoded !== raw) el = document.getElementById(decoded);
+    }
+    return el && el.classList.contains('card') ? el : null;
+  }
+
+  // A jump-index link scrolled to the package but left its <details> shut, so
+  // arriving at a package showed nothing inside it — while the search path
+  // already opened a matching package. Two navigation routes to the same card
+  // disagreeing about whether its contents are visible is the defect; this
+  // makes the hash route behave like the search route.
+  //
+  // Opening is deliberately one-way: never force the <details> closed here, or
+  // returning to a hash the reader has already expanded and collapsed by hand
+  // would fight them.
+  function openHashTarget() {
+    var card = cardForHash();
+    if (!card) return;
+    var d = card.querySelector('details');
+    if (d) d.open = true;
+  }
+
+  // Both routes in: the initial hash (a pasted or bookmarked deep link) and
+  // every later same-page navigation. A click on a jump-index link fires
+  // hashchange; loading with a hash already present does not, so neither call
+  // covers the other.
+  openHashTarget();
+  window.addEventListener('hashchange', openHashTarget);
 })();
 </script>
 </body>
