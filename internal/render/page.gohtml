@@ -55,9 +55,62 @@ ul.prims li { padding: .3rem 0; border-top: 1px solid var(--border); }
 }
 pre {
   background: var(--lock-bg); border: 1px solid var(--border); border-radius: 6px;
-  padding: .55rem .7rem; overflow-x: auto; margin: .5rem 0 0; font-size: .82rem;
+  padding: .55rem .7rem; margin: .5rem 0 0; font-size: .82rem;
+  /* Install URLs are long. Wrap rather than scroll sideways: a partially
+     visible command gets copied partially. pre-wrap keeps the newline that
+     separates the two commands. */
+  white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .unavailable { border-style: dashed; }
+
+/* --- toolbar, index, and collapsible primitive lists ---------------------
+   Added after the first run against a real marketplace: 73 primitives across
+   8 packages rendered as 8.2 screens of flat list with no navigation. The
+   design was correct for the 4-primitive fixture it was reviewed against and
+   did not survive the scale. */
+.toolbar {
+  display: flex; gap: .5rem; align-items: center; flex-wrap: wrap;
+  margin: 1.25rem 0 .5rem;
+}
+.toolbar input[type=search] {
+  flex: 1 1 16rem; min-width: 0; padding: .4rem .6rem; font: inherit;
+  color: var(--text); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.toolbar button {
+  padding: .4rem .6rem; font: inherit; font-size: .84rem; cursor: pointer;
+  color: var(--muted); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+.toolbar button:hover { color: var(--text); }
+
+ul.index {
+  list-style: none; margin: .25rem 0 1.5rem; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: .15rem .9rem;
+}
+ul.index li {
+  display: flex; gap: .5rem; align-items: baseline;
+  padding: .2rem 0; border-top: 1px solid var(--border); font-size: .88rem;
+}
+ul.index a { color: var(--accent); text-decoration: none; }
+ul.index a:hover { text-decoration: underline; }
+
+details summary {
+  cursor: pointer; color: var(--muted); font-size: .84rem;
+  padding: .3rem 0; border-top: 1px solid var(--border);
+}
+details summary:hover { color: var(--text); }
+details[open] summary { margin-bottom: .2rem; }
+
+/* Each primitive row is short, so a single column wastes most of the width. */
+details ul.prims {
+  columns: 2; column-gap: 1.5rem;
+}
+details ul.prims li { break-inside: avoid; }
+@media (max-width: 46rem) {
+  details ul.prims { columns: 1; }
+}
 </style>
 </head>
 <body>
@@ -106,6 +159,25 @@ pre {
   </div>
   {{ end }}
 
+  <div class="toolbar">
+    <input type="search" id="q" placeholder="Filter primitives and packages…"
+           autocomplete="off" spellcheck="false" aria-label="Filter primitives and packages">
+    <span class="meta" id="qcount"></span>
+    <button type="button" id="expand">Expand all</button>
+    <button type="button" id="collapse">Collapse all</button>
+  </div>
+
+  <ul class="index">
+    {{ range $pkg := .Packages }}
+    <li>
+      <a href="#pkg-{{ $pkg.Name }}"><span class="mono">{{ $pkg.Name }}</span></a>
+      {{ if eq $pkg.Access "public" }}<span class="meta">{{ len $pkg.Primitives }}</span>
+      {{ else if eq $pkg.Access "excluded" }}<span class="tag excluded">withheld</span>
+      {{ else }}<span class="tag restricted">unreadable</span>{{ end }}
+    </li>
+    {{ end }}
+  </ul>
+
   {{ range $src := .Sources }}
   <h2>{{ $src.Name }} <span class="tag">{{ $src.Kind }}</span></h2>
 
@@ -119,7 +191,7 @@ pre {
   {{ else }}
     {{ if $src.Owner }}<p class="meta">Owner {{ $src.Owner }}{{ if $src.Version }} · version {{ $src.Version }}{{ end }}</p>{{ end }}
     {{ range $pkg := $.Packages }}{{ if eq $pkg.Source $src.Name }}
-      <div class="card{{ if eq $pkg.Access "excluded" }} withheld excluded{{ else if eq $pkg.Access "restricted" }} withheld restricted{{ end }}">
+      <div class="card{{ if eq $pkg.Access "excluded" }} withheld excluded{{ else if eq $pkg.Access "restricted" }} withheld restricted{{ end }}" id="pkg-{{ $pkg.Name }}">
         <h3>{{ $pkg.Name }}
           {{ if eq $pkg.Access "excluded" }}<span class="tag excluded">withheld by descriptor</span>{{ end }}
           {{ if eq $pkg.Access "restricted" }}<span class="tag restricted">access restricted</span>{{ end }}
@@ -130,13 +202,16 @@ pre {
         {{ if eq $pkg.Access "public" }}
           {{ if $pkg.ResolvedSha }}<p class="meta mono">{{ $pkg.ResolvedSha }}</p>{{ end }}
           {{ if $pkg.Primitives }}
-            <ul class="prims">
-              {{ range $pkg.Primitives }}
-              <li><span class="ptype">{{ .Type }}</span><span class="mono">{{ .Name }}</span>
-                {{ if .Description }}<div class="meta">{{ .Description }}</div>{{ end }}
-              </li>
-              {{ end }}
-            </ul>
+            <details>
+              <summary data-total="{{ len $pkg.Primitives }}"><span class="scount">{{ len $pkg.Primitives }} primitive{{ if ne (len $pkg.Primitives) 1 }}s{{ end }}</span></summary>
+              <ul class="prims">
+                {{ range $pkg.Primitives }}
+                <li><span class="ptype">{{ .Type }}</span><span class="mono">{{ .Name }}</span>
+                  {{ if .Description }}<div class="meta">{{ .Description }}</div>{{ end }}
+                </li>
+                {{ end }}
+              </ul>
+            </details>
           {{ else }}
             <p class="meta">No primitives found in this package.</p>
           {{ end }}
@@ -157,5 +232,89 @@ pre {
   {{ end }}
   {{ end }}
 </main>
+
+<script>
+/* Filter and expand/collapse. Deliberately operates on the DOM that
+   html/template already escaped — it reads textContent and never interpolates a
+   harvested string into markup or code, so the single escaping guard in the
+   template remains the only one needed. No external requests: the page stays
+   self-contained and opens from file://. Degrades to a fully readable page with
+   JS off, because every primitive is present in the HTML and <details> works
+   natively. */
+(function () {
+  var q = document.getElementById('q');
+  var count = document.getElementById('qcount');
+  var cards = Array.prototype.slice.call(document.querySelectorAll('.card[id]'));
+  var indexItems = Array.prototype.slice.call(document.querySelectorAll('.index li'));
+
+  function setDetails(open) {
+    Array.prototype.forEach.call(document.querySelectorAll('details'), function (d) {
+      d.open = open;
+    });
+  }
+  document.getElementById('expand').addEventListener('click', function () { setDetails(true); });
+  document.getElementById('collapse').addEventListener('click', function () { setDetails(false); });
+
+  function filter() {
+    var term = q.value.trim().toLowerCase();
+    var shownPrims = 0, shownCards = 0;
+
+    cards.forEach(function (card) {
+      var rows = Array.prototype.slice.call(card.querySelectorAll('ul.prims li'));
+      var cardText = (card.querySelector('h3').textContent + ' ' +
+        (card.querySelector('.desc') ? card.querySelector('.desc').textContent : '')).toLowerCase();
+      var cardMatches = term === '' || cardText.indexOf(term) !== -1;
+      var anyRow = false;
+
+      // A package-level match shows the package CARD but does not disable
+      // primitive-level filtering. Several package descriptions contain common
+      // words ("code review", "automated MR review"), so treating a package hit
+      // as "show everything inside" made a search for "review" return 54 of 73
+      // primitives — a count that tells the reader nothing.
+      var rowHits = 0;
+      rows.forEach(function (li) {
+        var hit = term === '' || li.textContent.toLowerCase().indexOf(term) !== -1;
+        li.hidden = !hit;
+        if (hit) { rowHits++; shownPrims++; }
+      });
+      anyRow = rowHits > 0;
+
+      var visible = cardMatches || anyRow;
+      card.hidden = !visible;
+      if (visible) shownCards++;
+      // Open a package when a primitive inside it matched, so a hit is never
+      // hidden behind a collapsed section.
+      var d = card.querySelector('details');
+      if (d && term !== '' && anyRow) d.open = true;
+
+      // The summary count must describe what is actually listed beneath it.
+      // Left alone it read "26 primitives" above four filtered rows.
+      var sum = card.querySelector('details > summary');
+      var lbl = sum && sum.querySelector('.scount');
+      if (lbl) {
+        var total = +sum.getAttribute('data-total');
+        lbl.textContent = (term === '' || rowHits === total)
+          ? total + ' primitive' + (total === 1 ? '' : 's')
+          : rowHits + ' of ' + total + ' primitives';
+      }
+    });
+
+    indexItems.forEach(function (li) {
+      var a = li.querySelector('a');
+      var target = a && document.getElementById(a.getAttribute('href').slice(1));
+      li.hidden = !!(target && target.hidden);
+    });
+
+    count.textContent = term === '' ? '' :
+      shownCards + ' package' + (shownCards === 1 ? '' : 's') +
+      ', ' + shownPrims + ' primitive' + (shownPrims === 1 ? '' : 's');
+  }
+
+  q.addEventListener('input', filter);
+  q.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { q.value = ''; filter(); }
+  });
+})();
+</script>
 </body>
 </html>

@@ -123,6 +123,48 @@ func TestRenderEscapesHarvestedMarkup(t *testing.T) {
 	}
 }
 
+// The jump index put the package name into an href and an id attribute, which
+// is a different escaping context than body text. Package names come from a
+// marketplace manifest, so they are external input. The constant "#pkg-"/"pkg-"
+// prefix is what makes this safe: a name can never begin the URL, so it cannot
+// introduce a javascript: scheme.
+func TestRenderEscapesPackageNameInAttributes(t *testing.T) {
+	a := sample()
+	a.Packages[0].Name = `x" onmouseover="alert(1)`
+	out, err := Render(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if strings.Contains(s, `onmouseover="alert(1)"`) {
+		t.Error("package name broke out of the attribute — an event handler was injected")
+	}
+	if strings.Contains(s, `"alert(1)`) && !strings.Contains(s, "&#34;") {
+		t.Error("expected the quote in the package name escaped inside the attribute")
+	}
+	// The href must still be a same-page fragment, never a new scheme.
+	if strings.Contains(strings.ToLower(s), "href=\"javascript:") {
+		t.Error("a javascript: URL reached an href")
+	}
+}
+
+func TestRenderPackageNameCannotStartHref(t *testing.T) {
+	a := sample()
+	a.Packages[0].Name = "javascript:alert(1)"
+	out, err := Render(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	// The constant prefix must survive, keeping the value a fragment.
+	if !strings.Contains(s, "#pkg-javascript:alert(1)") && !strings.Contains(s, "#pkg-javascript") {
+		t.Error("expected the name confined behind the #pkg- prefix")
+	}
+	if strings.Contains(strings.ToLower(s), `href="javascript:`) {
+		t.Error("the name escaped the prefix and became the URL scheme")
+	}
+}
+
 func TestRenderDistinguishesExcludedFromRestricted(t *testing.T) {
 	out, err := Render(sample())
 	if err != nil {
