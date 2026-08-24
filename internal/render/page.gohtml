@@ -35,6 +35,31 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-
 .card {
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
   padding: 1rem 1.1rem; margin: .75rem 0;
+  /* A jump-index link scrolls the card to the very top of the viewport, where
+     its heading sits flush against the edge and reads as clipped rather than
+     as the thing you navigated to. Keep a little air above the anchor target.
+     Deliberately NOT a `display` declaration: cards are toggled with the
+     hidden attribute by the filter, and any author `display` on .card would
+     beat the UA [hidden] rule and require a .card[hidden] override (see the
+     ul.index li[hidden] note above). scroll-margin carries no such hazard. */
+  scroll-margin-top: 1.5rem;
+}
+
+/* Scrolling alone leaves no trace of WHICH card was targeted, so on a dense
+   page the eye has to re-find the package name it just clicked. A brief tinted
+   outline acknowledges the landing. Uses outline/box-shadow, never `display`
+   or layout geometry: :target must not disturb the cascade that hidden relies
+   on, and an outline does not reflow the card it decorates. */
+.card:target {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  transition: outline-color .9s ease-out 1.1s;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The fade is decoration, not information — the outline itself still marks
+     the target once the transition is off, so removing the motion loses
+     nothing for a reader who asked not to be animated. */
+  .card:target { transition: none; }
 }
 .card.withheld { background: var(--lock-bg); }
 .card.excluded { border-left: 3px solid var(--warn-border); }
@@ -321,6 +346,67 @@ details ul.prims li { break-inside: avoid; }
   q.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { q.value = ''; filter(); }
   });
+
+  // Resolve the card a location.hash names, or null.
+  //
+  // getElementById, never querySelector: package names are external input from
+  // a marketplace manifest, and a name containing a quote or bracket would be
+  // read as selector syntax. getElementById takes the string literally, so
+  // there is nothing to escape and no escaping to get wrong.
+  //
+  // The decode step is the load-bearing part, not a nicety. The same package
+  // name is escaped by html/template in two different contexts and comes out
+  // as two different strings: the href gets URL escaping ("#pkg-my%20pkg",
+  // "#pkg-caf%c3%a9") while the id gets attribute escaping and keeps the
+  // literal character ("pkg-my pkg", "pkg-café"). location.hash reports what
+  // the href said, so the raw lookup misses every name containing a space, an
+  // ampersand, a quote or any non-ASCII character. Try raw first — a plain
+  // ASCII name needs no decode and this keeps the common path exact — then
+  // fall back to the decoded form.
+  //
+  // decodeURIComponent throws URIError on a malformed escape ("#pkg-%zz",
+  // reachable from a hand-edited or truncated URL). Uncaught at this level it
+  // would abort the rest of this function and, on the initial call below, the
+  // listener registrations after it — silently taking the search filter down
+  // with it. Hence the catch.
+  function cardForHash() {
+    var raw = location.hash.slice(1);
+    if (raw === '') return null;
+    var el = document.getElementById(raw);
+    if (!el) {
+      var decoded;
+      try {
+        decoded = decodeURIComponent(raw);
+      } catch (e) {
+        return null;
+      }
+      if (decoded !== raw) el = document.getElementById(decoded);
+    }
+    return el && el.classList.contains('card') ? el : null;
+  }
+
+  // A jump-index link scrolled to the package but left its <details> shut, so
+  // arriving at a package showed nothing inside it — while the search path
+  // already opened a matching package. Two navigation routes to the same card
+  // disagreeing about whether its contents are visible is the defect; this
+  // makes the hash route behave like the search route.
+  //
+  // Opening is deliberately one-way: never force the <details> closed here, or
+  // returning to a hash the reader has already expanded and collapsed by hand
+  // would fight them.
+  function openHashTarget() {
+    var card = cardForHash();
+    if (!card) return;
+    var d = card.querySelector('details');
+    if (d) d.open = true;
+  }
+
+  // Both routes in: the initial hash (a pasted or bookmarked deep link) and
+  // every later same-page navigation. A click on a jump-index link fires
+  // hashchange; loading with a hash already present does not, so neither call
+  // covers the other.
+  openHashTarget();
+  window.addEventListener('hashchange', openHashTarget);
 })();
 </script>
 </body>
