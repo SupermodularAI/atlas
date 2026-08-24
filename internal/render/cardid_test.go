@@ -143,40 +143,99 @@ func TestRenderFragmentMatchesIDForHostileNames(t *testing.T) {
 }
 
 // The encoding must be injective: distinct (source, name) pairs must never
-// collide. The pairs below are the ones a lossy or naively-joined scheme gets
-// wrong — a slug that drops unsafe characters maps "data ops" and "data-ops"
-// together, and a bare "-" join maps ("a","b-c") onto ("a-b","c").
+// collide. This is a property over a space, so it is tested by GENERATING that
+// space rather than by hand-picking pairs.
+//
+// The method matters more than the cases here. A hand-written table shipped a
+// version of CardID that was not injective at all: every unsafe character in
+// the table sat in the NAME, so the escape-in-source path — which every real
+// collision needs — was never exercised, and the test named for the property
+// passed on a function that lacked it. Two later gaps were found by mutation
+// and closed by appending one more pair, patching symptoms rather than the
+// instrument. The alphabet below is chosen for the three ingredients a
+// collision needs at once: an unsafe byte in the source, hex-digit characters
+// in the name, and asymmetric component lengths.
 func TestCardIDIsInjective(t *testing.T) {
-	pairs := [][2]string{
-		{"a", "b"},
-		{"a-b", "c"}, {"a", "b-c"},
-		{"a_b", "c"}, {"a", "b_c"},
-		{"data ops", "x"}, {"data-ops", "x"}, {"data_ops", "x"}, {"dataops", "x"},
-		{"mkt", "dup"}, {"other", "dup"},
-		{"café", "x"}, {"cafe", "x"},
-		{"a&b", "c"}, {"a", "&bc"},
-		{"", "ab"}, {"ab", ""},
-		{"A", "b"}, {"a", "B"},
-		// Fixed-width escapes are what keep _XX self-delimiting. Drop the
-		// leading digit for bytes below 0x10 and "\x01" + "F" encodes as _1F,
-		// colliding with the single byte "\x1f". Found by mutation: the table
-		// above passed happily with variable-width hex.
-		{"x", "\x01F"}, {"x", "\x1f"},
+	// "_" is the escape introducer, "0"/"2"/"A"/"F" are hex digits that are
+	// also safe literals, " " and "," escape, "é"/"ǩ" share a low byte, and
+	// "a"/"-" are ordinary safe characters.
+	alphabet := []string{"a", "-", "_", "0", "2", "A", "F", " ", ",", "é", "ǩ"}
+
+	// Grow strings up to 3 bytes of alphabet symbols on each side: a collision
+	// needs one side to spend three characters on an escape while the other
+	// spends them on separator-plus-literals, so 3 is the shortest length that
+	// can express the failure at all.
+	var words []string
+	words = append(words, "")
+	for _, a := range alphabet {
+		words = append(words, a)
+		for _, b := range alphabet {
+			words = append(words, a+b)
+			for _, c := range alphabet {
+				words = append(words, a+b+c)
+			}
+		}
 	}
-	seen := map[string][2]string{}
-	inputs := map[[2]string]bool{}
-	for _, p := range pairs {
-		if inputs[p] {
-			t.Fatalf("pair (%q,%q) listed twice: identical inputs must give identical "+
-				"ids, so a duplicate entry would report a collision that is not one", p[0], p[1])
+
+	seen := make(map[string][2]string, len(words)*len(words))
+	for _, src := range words {
+		for _, name := range words {
+			id := CardID(src, name)
+			if prev, dup := seen[id]; dup {
+				t.Fatalf("collision: (%q,%q) and (%q,%q) both give %q",
+					prev[0], prev[1], src, name, id)
+			}
+			seen[id] = [2]string{src, name}
 		}
-		inputs[p] = true
-		id := CardID(p[0], p[1])
-		if prev, dup := seen[id]; dup {
-			t.Errorf("collision: (%q,%q) and (%q,%q) both give %q",
-				prev[0], prev[1], p[0], p[1], id)
+	}
+	if len(seen) < 100000 {
+		t.Errorf("only %d pairs tested; the space is too small to be meaningful", len(seen))
+	}
+	t.Logf("%d distinct (source,name) pairs, %d distinct ids", len(seen), len(seen))
+}
+
+// The specific pairs that broke the previous encoding, kept as named
+// regressions so a future rewrite cannot quietly reintroduce them. Each needs
+// an escape in the SOURCE, which is the ingredient the original table lacked.
+func TestCardIDSeparatorCannotBeForged(t *testing.T) {
+	for _, c := range []struct {
+		aSrc, aName, bSrc, bName string
+		why                      string
+	}{
+		{"a b", "2Cq", "a", "20b,q", "escape in source vs separator+hex literals in name"},
+		{"a_b", "5Fq", "a", "5Fb_q", "a literal underscore in the source is enough"},
+		{"a ", "0A", "a", "20\n", "minimal form"},
+		{"my_marketplace", "x", "my", "5Fmarketplacex", "an underscore in a real source name"},
+	} {
+		x, y := CardID(c.aSrc, c.aName), CardID(c.bSrc, c.bName)
+		if x == y {
+			t.Errorf("(%q,%q) and (%q,%q) both give %q — %s",
+				c.aSrc, c.aName, c.bSrc, c.bName, x, c.why)
 		}
-		seen[id] = p
+	}
+}
+
+// Rune-wise escaping would narrow a multi-byte rune to one byte and collide.
+// The comment on escapeIDPart calls the byte loop load-bearing; this is what
+// makes that claim testable.
+func TestCardIDDistinguishesRunesSharingALowByte(t *testing.T) {
+	if a, b := CardID("s", "é"), CardID("s", "ǩ"); a == b {
+		t.Errorf("U+00E9 and U+01E9 both give %q: escaping is not byte-wise", a)
+	}
+}
+
+// The join order and the exact escape spelling are part of the URL fragment
+// this product emits. A shared link has to keep resolving, so pin the format
+// rather than only its character class.
+func TestCardIDFormatIsStable(t *testing.T) {
+	for _, c := range [3][3]string{
+		{"mkt", "dup", "pkg-3-mkt-dup"},
+		{"mkt", "café", "pkg-3-mkt-caf_C3_A9"},
+		{"a b", "2Cq", "pkg-5-a_20b-2Cq"},
+	} {
+		if got := CardID(c[0], c[1]); got != c[2] {
+			t.Errorf("CardID(%q,%q) = %q, want %q", c[0], c[1], got, c[2])
+		}
 	}
 }
 

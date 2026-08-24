@@ -1496,13 +1496,14 @@ func TestRenderHrefAndIDAreByteIdentical(t *testing.T) {
 		}
 	}
 
-	// The decode fallback is retained for hashes this page did not emit (an
-	// over-encoding mail or chat client), so it should still be there -- but it
-	// is no longer what makes a name with a space work.
+	// Deliberately NOT asserted here: that the decode fallback still exists.
+	// A strings.Contains over the script SOURCE cannot fail on any real defect
+	// in it — the fallback could be inverted, passed the wrong argument, or
+	// wrapped in if (false) and the substring would still be found — while it
+	// does fail on a harmless rename of the variable. The behaviour worth
+	// checking is that an over-encoded hash resolves to the RIGHT card, which
+	// needs a browser and is verified there, not by grepping for a name.
 	body := scriptBody(t, s)
-	if !strings.Contains(body, "decodeURIComponent(raw)") {
-		t.Error("expected the decode fallback retained for externally re-encoded hashes")
-	}
 
 	// Scoped to cardForHash's own body, not the whole script. Unscoped, ANY
 	// try/catch anywhere in the script satisfies this — so a refactor that adds
