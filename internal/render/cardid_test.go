@@ -1,6 +1,7 @@
 package render
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -235,6 +236,69 @@ func TestCardIDFormatIsStable(t *testing.T) {
 	} {
 		if got := CardID(c[0], c[1]); got != c[2] {
 			t.Errorf("CardID(%q,%q) = %q, want %q", c[0], c[1], got, c[2])
+		}
+	}
+}
+
+// Injectivity by CONSTRUCTION rather than by search: an invertible function is
+// injective, so decoding the id back to its two escaped components proves the
+// property for every input at once, not only for the sampled space above.
+//
+// The decoder is the argument the previous encoding could not make. There, the
+// boundary had to be inferred and "_20" had two readings; here the length says
+// exactly how many bytes the source occupies, so nothing is guessed. Note what
+// the decode does NOT need: it never undoes an escape, because the length counts
+// bytes of the already-escaped source.
+func TestCardIDIsDecodable(t *testing.T) {
+	decode := func(t *testing.T, id string) (string, string) {
+		t.Helper()
+		if !strings.HasPrefix(id, "pkg-") {
+			t.Fatalf("id %q lacks the pkg- prefix", id)
+		}
+		r := id[len("pkg-"):]
+		// The decimal length runs to the FIRST "-": digits can never contain
+		// one, so the terminator is unambiguous however many digits there are.
+		dash := strings.Index(r, "-")
+		if dash == -1 {
+			t.Fatalf("id %q has no length terminator", id)
+		}
+		n, err := strconv.Atoi(r[:dash])
+		if err != nil {
+			t.Fatalf("id %q has a non-decimal length %q", id, r[:dash])
+		}
+		r = r[dash+1:]
+		if n > len(r) {
+			t.Fatalf("id %q claims a %d-byte source but only %d bytes remain", id, n, len(r))
+		}
+		src := r[:n]
+		r = r[n:]
+		// The cosmetic separator must sit exactly at the counted boundary.
+		if !strings.HasPrefix(r, "-") {
+			t.Fatalf("id %q: no separator at the counted boundary (got %q)", id, r)
+		}
+		return src, r[1:]
+	}
+
+	for _, c := range [][2]string{
+		{"abc", "x"},
+		{"", "x"}, {"x", ""}, {"", ""},
+		// digits either side of the boundary: the length must win over reading
+		// the source's leading digits as part of it
+		{"1", "2"}, {"12", "3"}, {"1", "23"},
+		// a source whose escaped form starts or ends with the separator byte
+		{"-abc", "x"}, {"abc-", "x"}, {"-", "-"},
+		// multi-digit and three-digit lengths
+		{strings.Repeat("a", 12), "x"}, {strings.Repeat("a", 100), "x"},
+		// escapes on both sides, including the introducer and hex literals
+		{"a b", "2Cq"}, {"a", "20b,q"}, {"a_b", "5Fq"}, {"a", "5Fb_q"},
+		{"café", "ǩ"}, {"my_marketplace", "x"},
+	} {
+		id := CardID(c[0], c[1])
+		gotSrc, gotName := decode(t, id)
+		wantSrc, wantName := escapeIDPart(c[0]), escapeIDPart(c[1])
+		if gotSrc != wantSrc || gotName != wantName {
+			t.Errorf("CardID(%q,%q) = %q decoded to (%q,%q), want (%q,%q)",
+				c[0], c[1], id, gotSrc, gotName, wantSrc, wantName)
 		}
 	}
 }
