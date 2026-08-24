@@ -196,6 +196,210 @@ func TestIndexRowsCanActuallyHide(t *testing.T) {
 	}
 }
 
+// styleBlock returns the contents of the page's single <style> element, so a
+// test can reason about the cascade rather than about arbitrary substrings.
+func styleBlock(t *testing.T, s string) string {
+	t.Helper()
+	open := strings.Index(s, "<style>")
+	end := strings.Index(s, "</style>")
+	if open == -1 || end == -1 {
+		t.Fatal("no <style> block in the rendered page")
+	}
+	return s[open+len("<style>") : end]
+}
+
+// indexRowDisplayRules returns, in source order, every rule that sets `display`
+// on an index ROW — the exact set that competes with the [hidden] override for
+// the li's display value.
+//
+// Rules targeting a descendant of the row (`ul.index a`) are excluded on
+// purpose: they set display on a different element and never contend for the
+// li's, so hiding the row removes them with it regardless of what they say.
+func indexRowDisplayRules(css string) []string {
+	var out []string
+	for _, block := range strings.Split(css, "}") {
+		open := strings.Index(block, "{")
+		if open == -1 {
+			continue
+		}
+		sel, body := block[:open], block[open+1:]
+		// A `display` inside a comment is not a declaration.
+		if i := strings.Index(sel, "*/"); i != -1 {
+			sel = sel[i+2:]
+		}
+		sel = strings.TrimSpace(sel)
+		if !strings.Contains(sel, ".index") {
+			continue
+		}
+		// The subject of the selector is its last compound. Only a rule whose
+		// subject is the li (or the ul.index element itself) can win the row's
+		// display value.
+		subject := sel
+		if i := strings.LastIndexAny(subject, " >"); i != -1 {
+			subject = subject[i+1:]
+		}
+		if !strings.HasPrefix(subject, "li") {
+			continue
+		}
+		if !strings.Contains(strings.ReplaceAll(body, " ", ""), "display:") {
+			continue
+		}
+		out = append(out, sel)
+	}
+	return out
+}
+
+// Companion to TestIndexRowsCanActuallyHide, guarding the same behaviour against
+// a different failure. That test asks whether the override EXISTS; this one asks
+// whether it still WINS.
+//
+// `ul.index li[hidden]` (specificity 0,2,2) currently beats `ul.index li`
+// (0,1,2) on specificity. Wrapping the list in a nav landmark invites rescoping
+// the plain rule to `nav ul.index li` (0,2,3), which silently outranks the
+// override and stops the filter hiding anything — while every substring
+// assertion in this file keeps passing, because the override text is still
+// present. So assert the cascade property directly: the [hidden] rule must be
+// the LAST index rule that sets display, and no competing index rule may carry a
+// descendant prefix the override lacks.
+//
+// This tests CSS, which the project generally does not. The carve-out is the
+// same one the [hidden] test already relies on: this declaration is load-bearing
+// for a behaviour, not a colour or a spacing preference.
+func TestIndexHiddenOverrideStillWinsTheCascade(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := indexRowDisplayRules(styleBlock(t, string(out)))
+	if len(rules) == 0 {
+		t.Fatal("no index row rules set display at all — expected at least the [hidden] override")
+	}
+	if last := rules[len(rules)-1]; !strings.Contains(last, "[hidden]") {
+		t.Errorf("the [hidden] override must be the last index row rule that sets display, "+
+			"otherwise a later same-or-higher-specificity rule beats it and filtered "+
+			"rows keep rendering; last rule is %q (all: %q)", last, rules)
+	}
+	// A descendant prefix on a competing rule adds specificity the override does
+	// not have, which beats it regardless of order.
+	for _, sel := range rules {
+		if strings.Contains(sel, "[hidden]") {
+			continue
+		}
+		if strings.Contains(sel, "nav") {
+			t.Errorf("index rule %q is scoped under nav but the [hidden] override is "+
+				"not: the extra descendant raises specificity above the override and "+
+				"hiding breaks silently", sel)
+		}
+	}
+}
+
+// The filter's only feedback is the result count, and it updates while the
+// search input holds focus — nothing moves a screen reader's virtual cursor over
+// it, so without a live region the count changes silently. role=status and
+// aria-live=polite are both asserted: status carries the semantic, polite pins
+// the queueing behaviour (assertive would interrupt the user mid-keystroke,
+// since this fires on every input event).
+func TestRenderAnnouncesFilterResultCount(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	i := strings.Index(s, `id="qcount"`)
+	if i == -1 {
+		t.Fatal(`no element with id="qcount" — the filter has no result count to announce`)
+	}
+	// Bound the inspection to the qcount tag itself, so an aria-live elsewhere
+	// on the page cannot satisfy this test.
+	tag := s[strings.LastIndex(s[:i], "<"):]
+	if end := strings.Index(tag, ">"); end != -1 {
+		tag = tag[:end]
+	}
+	if !strings.Contains(tag, `aria-live="polite"`) {
+		t.Errorf("#qcount needs aria-live=\"polite\" or the filter result count is "+
+			"never announced; got: %q", tag)
+	}
+	if !strings.Contains(tag, `role="status"`) {
+		t.Errorf("#qcount needs role=\"status\" to carry the live-region semantic; got: %q", tag)
+	}
+}
+
+// The jump index is the page's primary navigation. As a bare <ul> it announces
+// as a plain list and is absent from the landmark rotor, so it is reachable only
+// by reading linearly from the top of the page.
+func TestRenderJumpIndexIsALabelledNavLandmark(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	ul := strings.Index(s, `<ul class="index">`)
+	if ul == -1 {
+		t.Fatal(`no <ul class="index"> in the rendered page`)
+	}
+	nav := strings.LastIndex(s[:ul], "<nav")
+	if nav == -1 {
+		t.Fatal("the jump index is not wrapped in a nav landmark, so it announces as a " +
+			"plain list and never appears in the landmark rotor")
+	}
+	// The nav must open immediately before the list and still be open at it —
+	// a nav that closed earlier in the page would satisfy a naive search.
+	if strings.Contains(s[nav:ul], "</nav>") {
+		t.Fatal("the nearest preceding <nav> closes before ul.index: the index is not inside it")
+	}
+	navTag := s[nav:]
+	if end := strings.Index(navTag, ">"); end != -1 {
+		navTag = navTag[:end]
+	}
+	if !strings.Contains(navTag, `aria-label=`) {
+		t.Errorf("the nav landmark needs an aria-label to distinguish it from any other "+
+			"navigation on the page; got: %q", navTag)
+	}
+	if !strings.Contains(s[ul:], "</nav>") {
+		t.Error("the nav landmark is never closed after ul.index")
+	}
+}
+
+// WCAG 2.5.8 (Target Size Minimum) sets a 24px floor. The index anchors were
+// 22px: eight adjacent links in a dense grid, where a near-miss lands on the
+// neighbour and navigates somewhere the user did not ask for.
+//
+// The padding has to be on the anchor, not the row. ul.index li is a
+// baseline-aligned flex container, so the anchor is content-sized in the cross
+// axis and keeps its ~22px line box however tall the row grows; padding on the
+// li inflates the row while the measured target stays under the floor. flex:1
+// is what makes the gap beside a short name clickable — display:block alone is
+// inert on a flex item. Behaviour, not aesthetics: see the note on
+// TestIndexHiddenOverrideStillWinsTheCascade.
+func TestIndexLinksMeetTargetSizeMinimum(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := styleBlock(t, string(out))
+	i := strings.Index(css, "ul.index a {")
+	if i == -1 {
+		t.Fatal("no `ul.index a` rule with its own declarations: the anchor cannot be " +
+			"carrying the padding that lifts it over the 24px floor")
+	}
+	rule := css[i:]
+	if end := strings.Index(rule, "}"); end != -1 {
+		rule = rule[:end]
+	}
+	flat := strings.ReplaceAll(rule, " ", "")
+	// Vertical padding inside the anchor is what the criterion measures.
+	if !strings.Contains(flat, "padding:") {
+		t.Errorf("ul.index a sets no padding, so the target stays at its ~22px line "+
+			"box, under the WCAG 2.5.8 24px floor; got: %q", rule)
+	}
+	// Without flex:1 the anchor does not fill the row and the gap beside a short
+	// package name stays dead space.
+	if !strings.Contains(flat, "flex:1") {
+		t.Errorf("ul.index a needs flex:1 to fill the row — display:block is inert on a "+
+			"flex item, leaving the gap beside a short name unclickable; got: %q", rule)
+	}
+}
+
 func TestRenderDistinguishesExcludedFromRestricted(t *testing.T) {
 	out, err := Render(sample())
 	if err != nil {
