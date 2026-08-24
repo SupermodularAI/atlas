@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -32,7 +33,11 @@ func TestSchemaVersionIsEmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `"schemaVersion": 1`) {
+	// Derived from the constant, not hardcoded: this test asserts the field is
+	// emitted, and the pinned value belongs to
+	// TestExportedConstantLiteralValues.
+	want := fmt.Sprintf(`"schemaVersion": %d`, SchemaVersion)
+	if !strings.Contains(string(b), want) {
 		t.Errorf("schemaVersion missing from output: %s", b)
 	}
 }
@@ -105,10 +110,10 @@ func TestExportedConstantLiteralValues(t *testing.T) {
 		"StatusRead":        StatusRead,
 		"StatusUnavailable": StatusUnavailable,
 		"TypeSkill":         TypeSkill,
-		"TypeAgent":         TypeAgent,
+		"TypeSubagent":      TypeSubagent,
 		"TypeHook":          TypeHook,
 		"TypeCommand":       TypeCommand,
-		"TypeMCP":           TypeMCP,
+		"TypeMCPServer":     TypeMCPServer,
 	}
 	want := map[string]string{
 		"AccessPublic":      "public",
@@ -117,18 +122,18 @@ func TestExportedConstantLiteralValues(t *testing.T) {
 		"StatusRead":        "read",
 		"StatusUnavailable": "unavailable",
 		"TypeSkill":         "skill",
-		"TypeAgent":         "agent",
+		"TypeSubagent":      "subagent",
 		"TypeHook":          "hook",
 		"TypeCommand":       "command",
-		"TypeMCP":           "mcp",
+		"TypeMCPServer":     "mcp_server",
 	}
 	for name, got := range cases {
 		if got != want[name] {
 			t.Errorf("%s = %q, want %q", name, got, want[name])
 		}
 	}
-	if SchemaVersion != 1 {
-		t.Errorf("SchemaVersion = %d, want 1", SchemaVersion)
+	if SchemaVersion != 2 {
+		t.Errorf("SchemaVersion = %d, want 2", SchemaVersion)
 	}
 }
 

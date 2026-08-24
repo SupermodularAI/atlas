@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/SupermodularAI/atlas/internal/model"
 )
 
 func TestRunWritesBothArtifacts(t *testing.T) {
@@ -28,7 +31,9 @@ func TestRunWritesBothArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("atlas.json: %v", err)
 	}
-	if !strings.Contains(string(js), `"schemaVersion": 1`) {
+	// Derived from the constant so a deliberate version bump does not fail a
+	// test that only asserts the field is present.
+	if !strings.Contains(string(js), fmt.Sprintf(`"schemaVersion": %d`, model.SchemaVersion)) {
 		t.Error("atlas.json missing schemaVersion")
 	}
 	html, err := os.ReadFile(filepath.Join(out, "index.html"))

@@ -226,8 +226,10 @@ func walkBase(root, base string, excluded func(relPath string) bool, withinRoot 
 	}
 
 	// agents/<name>.md and commands/<name>.md
+	// The directory names are the on-disk convention; the emitted type is the
+	// shared vocabulary (ADR-0010). "agents/" holds subagents.
 	for dir, typ := range map[string]string{
-		"agents":   model.TypeAgent,
+		"agents":   model.TypeSubagent,
 		"commands": model.TypeCommand,
 	} {
 		subDir := filepath.Join(base, dir)
@@ -291,7 +293,10 @@ func walkBase(root, base string, excluded func(relPath string) bool, withinRoot 
 		return err
 	}
 	if st, err := os.Stat(mcp); err == nil && !st.IsDir() {
-		addFound(model.Primitive{Type: model.TypeMCP, Name: ".mcp.json"}, mcp)
+		// .mcp.json declares servers, not individual tools — so the kind is
+		// mcp_server. The two stay distinct (ADR-0010): a server is the
+		// governable unit, a tool is what fires.
+		addFound(model.Primitive{Type: model.TypeMCPServer, Name: ".mcp.json"}, mcp)
 	}
 
 	return nil

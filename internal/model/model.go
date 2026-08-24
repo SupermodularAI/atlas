@@ -12,7 +12,12 @@ package model
 import "encoding/json"
 
 // SchemaVersion is the atlas.json contract version.
-const SchemaVersion = 1
+//
+// v2 renamed two primitive type values to the shared workstream vocabulary
+// (ADR-0010): "agent" became "subagent" and "mcp" became "mcp_server". A
+// consumer that matched on the v1 strings sees no subagents and no MCP servers,
+// which is silent rather than loud — hence the bump.
+const SchemaVersion = 2
 
 // Access values describe what this run did with a package, not the package's
 // intended audience.
@@ -28,15 +33,22 @@ const (
 	StatusUnavailable = "unavailable"
 )
 
-// Primitive types. This closed set is Atlas's own invention: no closed
-// primitive-type enum exists upstream (manifest treats primitive.type as a
-// free-form string), so this fills a gap rather than matching a convention.
+// Primitive types. The vocabulary is shared across the workstream and is
+// defined by the telemetry record schema, which is the superset and the
+// validated one; Atlas adopts it rather than keeping its own names (ADR-0010).
+// Renaming these is a breaking change to atlas.json: a consumer joining "what
+// exists" to "what is used" matches on this value.
+//
+// Atlas emits only the kinds it can observe by harvesting a tree. The shared
+// vocabulary also defines mcp_tool, plugin and builtin_tool, which are
+// invocation-time observations rather than things on disk; their absence here
+// is a limit of harvesting, not a disagreement about naming.
 const (
-	TypeSkill   = "skill"
-	TypeAgent   = "agent"
-	TypeHook    = "hook"
-	TypeCommand = "command"
-	TypeMCP     = "mcp"
+	TypeSkill     = "skill"
+	TypeSubagent  = "subagent"
+	TypeHook      = "hook"
+	TypeCommand   = "command"
+	TypeMCPServer = "mcp_server"
 )
 
 // Primitive is one governable unit inside a package.
