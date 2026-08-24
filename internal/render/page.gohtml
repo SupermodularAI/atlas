@@ -46,20 +46,41 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-
 }
 
 /* Scrolling alone leaves no trace of WHICH card was targeted, so on a dense
-   page the eye has to re-find the package name it just clicked. A brief tinted
-   outline acknowledges the landing. Uses outline/box-shadow, never `display`
-   or layout geometry: :target must not disturb the cascade that hidden relies
-   on, and an outline does not reflow the card it decorates. */
+   page the eye has to re-find the package name it just clicked. A tinted ring
+   marks the landing and fades out.
+
+   An animation with an explicit `from`, not a transition. A transition
+   interpolates between an existing value and a new one, and :target has no
+   usable from-state to offer: outline-style goes none -> solid, which is
+   discrete and paints instantly, while outline-color starts at its initial
+   value currentColor — the near-black text colour. Transitioning outline-color
+   therefore ran the highlight BACKWARDS, snapping a black ring on immediately
+   and fading it INTO accent blue, then leaving it drawn for as long as the
+   hash matched. Measured: rgb(26,26,25) at t=2ms, still rgb(43,95,217) at
+   t=6000ms. @keyframes states both ends explicitly, so there is nothing to
+   infer and the fade genuinely ends.
+
+   box-shadow, not outline, because a shadow interpolates to `transparent`
+   cleanly. Both are layout-inert, which is the constraint that matters here:
+   neither may set `display`, or it would beat the UA [hidden] rule and break
+   the filter's ability to hide a card (see the ul.index li[hidden] note). */
 .card:target {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  transition: outline-color .9s ease-out 1.1s;
+  animation: target-ack 2s ease-out 1;
+}
+@keyframes target-ack {
+  from { box-shadow: 0 0 0 2px var(--accent); }
+  to   { box-shadow: 0 0 0 2px transparent; }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* The fade is decoration, not information — the outline itself still marks
-     the target once the transition is off, so removing the motion loses
-     nothing for a reader who asked not to be animated. */
-  .card:target { transition: none; }
+  /* Kill the motion, but keep the acknowledgement: a reader who asked not to
+     be animated still needs to see which card they landed on, so the ring is
+     restated as a static shadow rather than simply dropped. Without that
+     restatement `animation: none` alone would leave them with no marker at
+     all — worse than the animated path, not merely calmer than it. */
+  .card:target {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--accent);
+  }
 }
 .card.withheld { background: var(--lock-bg); }
 .card.excluded { border-left: 3px solid var(--warn-border); }

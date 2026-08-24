@@ -600,9 +600,28 @@ func TestRenderHrefAndIDEscapeDifferently(t *testing.T) {
 		t.Error("no decodeURIComponent fallback: a package name containing a space or " +
 			"non-ASCII character percent-encodes in the href and would never match its id")
 	}
-	if !strings.Contains(body, "catch") {
-		t.Error("decodeURIComponent throws URIError on a malformed escape; uncaught it " +
-			"would abort the script and disable the search filter")
+
+	// Scoped to cardForHash's own body, not the whole script. Unscoped, ANY
+	// try/catch anywhere in the script satisfies this — so a refactor that adds
+	// an unrelated guard (say around history.replaceState, which throws on
+	// file://) while dropping the one around decodeURIComponent would leave the
+	// suite green with the guard gone. That is not hypothetical: it is the
+	// mutation this assertion is verified against.
+	fn := strings.Index(body, "function cardForHash")
+	if fn == -1 {
+		t.Fatal("expected a cardForHash function")
+	}
+	resolver := body[fn:]
+	if end := strings.Index(resolver, "\n  }"); end != -1 {
+		resolver = resolver[:end]
+	}
+	if !strings.Contains(resolver, "decodeURIComponent") {
+		t.Fatalf("the decode must live inside cardForHash; scoping is wrong, got: %q", resolver)
+	}
+	if !strings.Contains(resolver, "catch") {
+		t.Errorf("decodeURIComponent throws URIError on a malformed escape (\"#pkg-%%zz\"); "+
+			"uncaught it would abort the script and disable the search filter. "+
+			"cardForHash body: %q", resolver)
 	}
 }
 
@@ -646,10 +665,19 @@ func TestCardTargetIsVisuallyAcknowledged(t *testing.T) {
 	if !strings.Contains(s, ".card:target") {
 		t.Error("no :target rule: nothing confirms which card the jump landed on")
 	}
-	idx := strings.Index(s, ".card:target {")
+	// Anchored to a top-of-line selector ("\n.card:target {"), not a bare
+	// substring. The same selector legitimately appears twice: the base rule and
+	// the copy nested inside @media (prefers-reduced-motion), indented two
+	// spaces. An unanchored search falls through to the nested one when the base
+	// rule is deleted, so the test would be satisfied by the accessibility
+	// fallback alone and pass with the default-path highlight gone. Verified by
+	// mutation — deleting the base rule passed before this anchor was added.
+	idx := strings.Index(s, "\n.card:target {")
 	if idx == -1 {
-		t.Fatal("expected a .card:target rule block")
+		t.Fatal("expected a top-level .card:target rule block (a rule inside a media " +
+			"query does not acknowledge the landing for the default path)")
 	}
+	idx++ // step past the anchoring newline
 	rule := s[idx:]
 	if end := strings.Index(rule, "}"); end != -1 {
 		rule = rule[:end]
@@ -662,32 +690,88 @@ func TestCardTargetIsVisuallyAcknowledged(t *testing.T) {
 		t.Error("the :target rule must not set display — .card is toggled with the " +
 			"hidden attribute, and an author display would beat the UA [hidden] rule")
 	}
-	if !strings.Contains(rule, "outline") && !strings.Contains(rule, "box-shadow") &&
-		!strings.Contains(rule, "background") {
-		t.Errorf("the :target rule must produce a visible acknowledgement, got: %q", rule)
+	// The acknowledgement may be painted directly by this rule, or delegated to
+	// a @keyframes animation it names. Follow the indirection rather than
+	// requiring the paint inline: after Finding 1 the ring is drawn by
+	// @keyframes (a transition had no usable from-state on :target), so an
+	// inline-only check would reject the correct fix.
+	paints := func(css string) bool {
+		return strings.Contains(css, "outline") || strings.Contains(css, "box-shadow") ||
+			strings.Contains(css, "background")
+	}
+	if !paints(rule) {
+		name := ""
+		if i := strings.Index(rule, "animation:"); i != -1 {
+			fields := strings.Fields(rule[i+len("animation:"):])
+			if len(fields) > 0 {
+				name = fields[0]
+			}
+		}
+		if name == "" {
+			t.Fatalf("the :target rule neither paints an acknowledgement nor names an "+
+				"animation that could, got: %q", rule)
+		}
+		kf := strings.Index(s, "@keyframes "+name)
+		if kf == -1 {
+			t.Fatalf("the :target rule animates %q but no such @keyframes block exists — "+
+				"the highlight would never paint", name)
+		}
+		block := s[kf:]
+		if end := strings.Index(block, "\n}"); end != -1 {
+			block = block[:end]
+		}
+		// The keyframes must actually paint, and must not animate layout: a
+		// `display` here would reach the same hidden-toggled .card and beat the
+		// UA [hidden] rule, exactly as an inline declaration would.
+		if strings.Contains(strings.ReplaceAll(block, " ", ""), "display:") {
+			t.Errorf("the @keyframes must not animate display — .card is toggled with the "+
+				"hidden attribute, got: %q", block)
+		}
+		if !paints(block) {
+			t.Errorf("@keyframes %s must paint a visible acknowledgement, got: %q", name, block)
+		}
 	}
 }
 
-// Any transition must be disableable by a reader who asked not to be animated.
-func TestTargetTransitionRespectsReducedMotion(t *testing.T) {
+// Any motion must be disableable by a reader who asked not to be animated —
+// and disabling it must not cost them the acknowledgement itself.
+//
+// The original :target rule used `transition`, which was the Finding-1 defect:
+// :target offers no usable from-state, so the highlight ran backwards. The fix
+// is a @keyframes animation with explicit endpoints, so this test pins
+// `animation: none` as the kill switch. It deliberately checks BOTH halves —
+// motion off AND the ring still painted — because an earlier version of the
+// reduced-motion path was strictly BETTER than the animated one, which is what
+// exposed the animation as the bug. Losing the static fallback would invert
+// that failure instead of fixing it.
+func TestTargetMotionRespectsReducedMotion(t *testing.T) {
 	out, err := Render(sample())
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(out)
-	if !strings.Contains(s, "transition") {
-		return // No animation at all is a valid way to satisfy the requirement.
+	if !strings.Contains(s, "animation") && !strings.Contains(s, "transition") {
+		return // No motion at all is a valid way to satisfy the requirement.
 	}
 	if !strings.Contains(s, "prefers-reduced-motion: reduce") {
 		t.Fatal("the stylesheet animates but has no prefers-reduced-motion block")
 	}
-	// The block must actually switch the transition off, not merely exist.
 	idx := strings.Index(s, "prefers-reduced-motion: reduce")
 	block := s[idx:]
-	if end := strings.Index(block, "\n}"); end != -1 {
+	if end := strings.Index(block, "\n}\n"); end != -1 {
 		block = block[:end]
 	}
-	if !strings.Contains(strings.ReplaceAll(block, " ", ""), "transition:none") {
-		t.Errorf("the reduced-motion block must set transition: none, got: %q", block)
+	flat := strings.ReplaceAll(block, " ", "")
+
+	// Half one: the motion is actually switched off, not merely shortened.
+	if !strings.Contains(flat, "animation:none") && !strings.Contains(flat, "transition:none") {
+		t.Errorf("the reduced-motion block must switch the motion off, got: %q", block)
+	}
+	// Half two: the acknowledgement survives. Without this, `animation: none`
+	// leaves a reduced-motion reader no marker at all — they would be worse
+	// off than an animated reader, not calmer.
+	if !strings.Contains(flat, "box-shadow:") && !strings.Contains(flat, "outline:") {
+		t.Errorf("the reduced-motion block must still paint a static acknowledgement, "+
+			"or disabling motion removes the landing marker entirely, got: %q", block)
 	}
 }
