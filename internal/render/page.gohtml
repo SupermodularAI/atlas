@@ -93,6 +93,13 @@ ul.index li {
   display: flex; gap: .5rem; align-items: baseline;
   padding: .2rem 0; border-top: 1px solid var(--border); font-size: .88rem;
 }
+/* Required, not redundant. The hidden attribute only works through the UA rule
+   [hidden] { display: none }, and the author `display: flex` above beats any
+   UA declaration in the cascade. Without this the filter sets li.hidden and
+   the row keeps rendering, so the index contradicts the result count beside
+   the search box. Any element toggled via .hidden must either avoid setting
+   display or carry an override like this one. */
+ul.index li[hidden] { display: none; }
 ul.index a { color: var(--accent); text-decoration: none; }
 ul.index a:hover { text-decoration: underline; }
 

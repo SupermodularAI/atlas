@@ -165,6 +165,37 @@ func TestRenderPackageNameCannotStartHref(t *testing.T) {
 	}
 }
 
+// The filter hides index rows by setting the hidden attribute, which takes
+// effect only through the UA rule [hidden] { display: none }. Because the
+// stylesheet gives ul.index li an author `display`, that author declaration
+// wins the cascade and hidden silently stops working — the row keeps rendering
+// while li.hidden reads true, so the index contradicts the search count.
+// Caught only by measuring computed style in a browser; asserting on
+// element.hidden passes either way, because it is the input to the behaviour
+// rather than the behaviour. This test pins the override so the pair cannot
+// drift apart again.
+func TestIndexRowsCanActuallyHide(t *testing.T) {
+	a := sample()
+	out, err := Render(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if !strings.Contains(s, "ul.index li[hidden]") {
+		t.Fatal("no [hidden] override for index rows: the author display rule beats " +
+			"the UA [hidden] rule, so filtering the index would not hide anything")
+	}
+	// The override is only meaningful if it actually removes the row from layout.
+	idx := strings.Index(s, "ul.index li[hidden]")
+	rule := s[idx:]
+	if end := strings.Index(rule, "}"); end != -1 {
+		rule = rule[:end]
+	}
+	if !strings.Contains(strings.ReplaceAll(rule, " ", ""), "display:none") {
+		t.Errorf("the [hidden] override must set display:none, got: %q", rule)
+	}
+}
+
 func TestRenderDistinguishesExcludedFromRestricted(t *testing.T) {
 	out, err := Render(sample())
 	if err != nil {
