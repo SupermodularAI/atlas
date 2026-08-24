@@ -369,9 +369,49 @@ func scriptBlock(t *testing.T, page string) string {
 	return page[start+len("<script>") : end]
 }
 
+// jsFunctionBody returns the body of the named function declaration in the
+// page's script, from its opening brace to the matching close.
+//
+// Needed because an unscoped strings.Contains over the whole script block
+// cannot assert anything about a specific construct inside it. Two assertions
+// in this file were proved worthless exactly that way: a check for "catch" was
+// satisfied by an unrelated catch elsewhere in the script, and a check for
+// "searchParams" was satisfied by the read-back call, so deleting syncURL's
+// own guard or swapping its encoding for string concatenation left both tests
+// green. Scoping the search to one function body is what gives them teeth.
+func jsFunctionBody(t *testing.T, js, name string) string {
+	t.Helper()
+	decl := "function " + name + "("
+	i := strings.Index(js, decl)
+	if i == -1 {
+		t.Fatalf("no %s declaration in the page script", decl)
+	}
+	open := strings.Index(js[i:], "{")
+	if open == -1 {
+		t.Fatalf("no opening brace for %s", name)
+	}
+	open += i
+	// Brace matching rather than a search for the next "}": the body contains
+	// nested blocks, so the first close brace is not the function's.
+	depth := 0
+	for j := open; j < len(js); j++ {
+		switch js[j] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return js[open+1 : j]
+			}
+		}
+	}
+	t.Fatalf("unbalanced braces in %s", name)
+	return ""
+}
+
 // The empty state must exist in the served HTML and start hidden. Creating it
 // from JS instead would leave a JS-off reader with no element at all, and
-// shipping it without `hidden` would paint "No primitives match" above the
+// shipping it without `hidden` would paint the no-match message above the
 // full listing on every unfiltered load.
 func TestRenderEmptyStateIsInMarkupAndStartsHidden(t *testing.T) {
 	out, err := Render(sample())
@@ -399,7 +439,7 @@ func TestRenderEmptyStateIsInMarkupAndStartsHidden(t *testing.T) {
 	if !strings.Contains(s, `id="emptyterm"`) {
 		t.Error(`no id="emptyterm" span: the term needs its own text-only node to be set into`)
 	}
-	if !strings.Contains(s, "No primitives match") {
+	if !strings.Contains(s, "No packages or primitives match") {
 		t.Error("the empty state must explain itself in the content area, " +
 			"not leave the count beside the input as the only feedback")
 	}
@@ -522,6 +562,9 @@ func TestEmptyStateTermIsNotAnInjectionSink(t *testing.T) {
 	for _, sink := range []string{
 		"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write",
 		"eval(", "createContextualFragment", "srcdoc",
+		// Absent today; listed so they cannot be introduced. new Function is
+		// eval by another name, and setHTML parses a string as markup.
+		"new Function", "setHTML",
 	} {
 		if strings.Contains(js, sink) {
 			t.Errorf("the script must never build DOM from an HTML string, found %q", sink)
@@ -581,6 +624,51 @@ func TestEmptyStateRejectsMarkupInjection(t *testing.T) {
 	}
 }
 
+// The echoed term is attacker-controlled in both length and content, so the
+// element that renders it must be able to break an unbreakable run.
+//
+// .empty is display:flex with flex-wrap:wrap, which wraps flex ITEMS and does
+// nothing for a long token inside one. Measured before this rule existed: a
+// 120-character term pushed documentElement.scrollWidth 123px past a 1200px
+// viewport, 200 characters 913px past it, and 10,000 characters 97,669px past
+// it — a shared ?q= link that makes the whole page scroll sideways. The same
+// hazard is already handled for `pre` (long install URLs) in this stylesheet;
+// the element rendering untrusted text needs it at least as much.
+func TestEmptyStateCanBreakAnUnbreakableTerm(t *testing.T) {
+	out, err := Render(sample())
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := styleBlock(t, string(out))
+
+	rule := ""
+	for _, r := range strings.Split(css, "}") {
+		head, body, ok := strings.Cut(r, "{")
+		if !ok {
+			continue
+		}
+		for _, part := range strings.Split(head, ",") {
+			if strings.TrimSpace(part) == ".empty" {
+				rule = body
+			}
+		}
+	}
+	if rule == "" {
+		t.Fatal("no .empty rule in the stylesheet")
+	}
+	flat := strings.ReplaceAll(rule, " ", "")
+	// overflow-wrap:anywhere, word-break:break-all or word-wrap:break-word all
+	// create a break opportunity; assert the property, not one spelling.
+	if !strings.Contains(flat, "overflow-wrap:anywhere") &&
+		!strings.Contains(flat, "overflow-wrap:break-word") &&
+		!strings.Contains(flat, "word-break:break-all") &&
+		!strings.Contains(flat, "word-wrap:break-word") {
+		t.Errorf(".empty renders an attacker-controlled term and must be able to "+
+			"break an unbreakable run, or a long ?q= makes the page scroll "+
+			"sideways; flex-wrap does not do this. Got: %q", rule)
+	}
+}
+
 // ?q= mirroring must replace the current history entry. filter() runs on every
 // input event, so pushing would add one history entry per keystroke and the
 // back button would no longer return the reader to where they came from.
@@ -598,22 +686,44 @@ func TestURLSyncReplacesHistoryRatherThanPushing(t *testing.T) {
 		t.Error("the search term must be mirrored into the URL with replaceState, " +
 			"so a filtered view can be shared and survives reload")
 	}
-	// Built through URLSearchParams, not string concatenation: a term
-	// containing & or # would otherwise corrupt the query string.
-	if !strings.Contains(js, "searchParams") {
-		t.Error("the query parameter must be built with URLSearchParams so the " +
-			"term is encoded rather than concatenated into the URL")
-	}
 	// Read back on load, or the shared URL renders an unfiltered page.
 	if !strings.Contains(js, "searchParams.get('q')") {
 		t.Error("?q= must be read back on load to prime the filter")
 	}
-	// A file:// document has an opaque origin where replaceState can throw.
-	// Unguarded, that exception escapes the input handler and kills filtering
-	// on every keystroke — worse than the defect being fixed.
-	if !strings.Contains(js, "catch") {
-		t.Error("the URL sync must be guarded: on an opaque (file://) origin a " +
-			"replaceState call can throw, which would break filtering entirely")
+
+	// The next two assertions are scoped to syncURL's own body. Asserting them
+	// against the whole script block made both unfailable: "searchParams" was
+	// satisfied by the read-back call above, and "catch" by the load-time
+	// guard at the bottom of the script.
+	sync := jsFunctionBody(t, js, "syncURL")
+
+	// The parameter must be written through URLSearchParams, which percent-
+	// encodes the term. Assigning a concatenated string instead silently
+	// truncates any term containing &: "a&b" would be written as q=a&b and
+	// read back as "a", losing everything after the ampersand.
+	if !strings.Contains(sync, "searchParams.set") {
+		t.Error("syncURL must write the term with searchParams.set so it is " +
+			"encoded; concatenating it into the query string corrupts any " +
+			"term containing & or #")
+	}
+	if strings.Contains(sync, "u.search =") || strings.Contains(sync, "u.search=") {
+		t.Error("syncURL must not assign a hand-built query string: that is the " +
+			"concatenation searchParams.set exists to avoid")
+	}
+
+	// A file:// document has an opaque origin where a replaceState call
+	// carrying a URL can throw. Unguarded, that exception escapes the input
+	// handler and kills filtering on every keystroke — worse than the defect
+	// being fixed. The guard must be inside syncURL, wrapping the throwing
+	// call, not merely somewhere in the script.
+	if !strings.Contains(sync, "catch") {
+		t.Error("syncURL's own body must catch: on an opaque (file://) origin a " +
+			"replaceState call can throw, and an unguarded throw here breaks " +
+			"filtering entirely")
+	}
+	if !strings.Contains(sync, "replaceState") {
+		t.Error("the replaceState call must sit inside syncURL, so the catch " +
+			"above actually guards it")
 	}
 }
 
