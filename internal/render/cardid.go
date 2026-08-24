@@ -36,7 +36,7 @@ import (
 //
 // The form is a LENGTH-PREFIXED pair:
 //
-//	pkg-<len(esc(source))>-<esc(source)><esc(name)>
+//	pkg-<len(esc(source))>-<esc(source)>-<esc(name)>
 //
 //	("mkt", "dup")   -> pkg-3-mkt-dup
 //	("mkt", "café")  -> pkg-3-mkt-caf_C3_A9

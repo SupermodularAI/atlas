@@ -160,7 +160,19 @@ func TestCardIDIsInjective(t *testing.T) {
 	// "_" is the escape introducer, "0"/"2"/"A"/"F" are hex digits that are
 	// also safe literals, " " and "," escape, "é"/"ǩ" share a low byte, and
 	// "a"/"-" are ordinary safe characters.
-	alphabet := []string{"a", "-", "_", "0", "2", "A", "F", " ", ",", "é", "ǩ"}
+	//
+	// "\x01" and "\x1f" are here for a reason found the hard way, and they are
+	// a PAIR: the ambiguity is that "\x01"+"F" and "\x1f" both encode to _1F
+	// under variable-width hex, so a generator needs BOTH bytes to build the two
+	// sides. An earlier version of this test was a hand-picked table carrying
+	// exactly that pair, added by its own mutation testing; the rewrite to a
+	// generator dropped it, no other symbol encoded below 0x10, and the
+	// variable-width-hex mutation went from killed to surviving. Adding only the
+	// sub-0x10 byte was still not enough — it builds one side and never the
+	// other. Replacing a table with a generator is a strict improvement only if
+	// the alphabet can express every ambiguity the table's entries encoded,
+	// which for a collision means every byte on BOTH sides of it.
+	alphabet := []string{"a", "-", "_", "0", "2", "A", "F", " ", ",", "é", "ǩ", "\x01", "\x1f"}
 
 	// Grow strings up to 3 bytes of alphabet symbols on each side: a collision
 	// needs one side to spend three characters on an escape while the other
@@ -207,6 +219,13 @@ func TestCardIDSeparatorCannotBeForged(t *testing.T) {
 		{"a_b", "5Fq", "a", "5Fb_q", "a literal underscore in the source is enough"},
 		{"a ", "0A", "a", "20\n", "minimal form"},
 		{"my_marketplace", "x", "my", "5Fmarketplacex", "an underscore in a real source name"},
+		// Fixed-width escapes are what keep _XX self-delimiting: drop the
+		// leading digit for bytes below 0x10 and "\x01"+"F" encodes as _1F,
+		// colliding with the single byte "\x1f". Kept as a NAMED pair as well as
+		// in the generator's alphabet, because the name records why the byte
+		// matters in a way an alphabet entry cannot.
+		{"x", "\x01F", "x", "\x1f", "variable-width hex would collapse both to _1F"},
+		{"\x01F", "x", "\x1f", "x", "the same ambiguity in the source component"},
 	} {
 		x, y := CardID(c.aSrc, c.aName), CardID(c.bSrc, c.bName)
 		if x == y {
