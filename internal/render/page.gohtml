@@ -137,7 +137,7 @@ ul.index {
 }
 ul.index li {
   display: flex; gap: .5rem; align-items: baseline;
-  padding: .2rem 0; border-top: 1px solid var(--border); font-size: .88rem;
+  padding: .4rem 0; border-top: 1px solid var(--border); font-size: .88rem;
 }
 /* Required, not redundant. The hidden attribute only works through the UA rule
    [hidden] { display: none }, and the author `display: flex` above beats any
@@ -146,7 +146,20 @@ ul.index li {
    the search box. Any element toggled via .hidden must either avoid setting
    display or carry an override like this one. */
 ul.index li[hidden] { display: none; }
-ul.index a { color: var(--accent); text-decoration: none; }
+/* WCAG 2.5.8 (Target Size Minimum) wants 24px. These eight links sit adjacent in
+   a dense grid, which is the exact case that criterion exists for: a near-miss tap
+   lands on the neighbour and navigates somewhere the user did not ask for.
+   The padding must live HERE and not on the li. The row is a baseline-aligned flex
+   container, so the anchor is content-sized in the cross axis and stays its .88rem
+   line box (~22px) however tall the row grows — li padding sits outside the hit
+   target and raises the row while the measured target stays under the floor.
+   flex:1 is the other half: display:block is inert on a flex item, and without it
+   the gap beside a short package name is dead space that looks clickable.
+   Sets no `display` on the li, so `ul.index li[hidden]` still hides the row. */
+ul.index a {
+  flex: 1; display: block; padding: .25rem 0;
+  color: var(--accent); text-decoration: none;
+}
 ul.index a:hover { text-decoration: underline; }
 
 details summary {
@@ -215,11 +228,33 @@ details ul.prims li { break-inside: avoid; }
   <div class="toolbar">
     <input type="search" id="q" placeholder="Filter primitives and packages…"
            autocomplete="off" spellcheck="false" aria-label="Filter primitives and packages">
-    <span class="meta" id="qcount"></span>
+    <!-- The count is the only feedback the filter gives, and a sighted user reads
+         it from the visual change alone. Without a live region the same update is
+         silent to a screen reader: the input keeps focus while typing, so nothing
+         moves the virtual cursor over this span and the result is never announced.
+         polite (not assertive) because it fires on every keystroke and must queue
+         behind the user's own typing rather than interrupt it.
+         Starts empty and stays empty until the first interaction: filter() does
+         not run at load, so nothing is announced when the page opens. Once the
+         user has filtered, clearing reports counts rather than emptying — see the
+         note on count.textContent. The node is mutated in place and never
+         replaced, which is the pattern that actually announces. -->
+    <span class="meta" id="qcount" role="status" aria-live="polite"></span>
     <button type="button" id="expand">Expand all</button>
     <button type="button" id="collapse">Collapse all</button>
   </div>
 
+  <!-- This jump list is the page's primary navigation, but a bare <ul> announces
+       as "list, 8 items" and is reachable only by reading linearly from the top.
+       A nav landmark puts it in the landmark rotor, so a screen-reader user can
+       jump straight to it. Labelled because a page may hold several landmarks and
+       "navigation" alone does not say which one this is.
+       The wrapper is deliberately HTML-only: no stylesheet selector was rescoped
+       to include it. `ul.index li[hidden]` (specificity 0,2,2) beats `ul.index li`
+       (0,1,2) on specificity, not order — prefixing the plain rule with `nav`
+       (0,2,3) while leaving the override alone would silently outrank it and stop
+       the filter hiding rows, with every string-matching test still passing. -->
+  <nav aria-label="Packages">
   <ul class="index">
     {{ range $pkg := .Packages }}
     <li>
@@ -230,6 +265,7 @@ details ul.prims li { break-inside: avoid; }
     </li>
     {{ end }}
   </ul>
+  </nav>
 
   {{ range $src := .Sources }}
   <h2>{{ $src.Name }} <span class="tag">{{ $src.Kind }}</span></h2>
@@ -358,7 +394,20 @@ details ul.prims li { break-inside: avoid; }
       li.hidden = !!(target && target.hidden);
     });
 
-    count.textContent = term === '' ? '' :
+    // Widening has to announce too. An aria-live region defaults to
+    // aria-relevant="additions text", so emptying this node on clear is a
+    // removal and is NOT announced: a user could type a term, hear the count,
+    // press Escape, and hear silence with no confirmation the filter lifted.
+    // The unfiltered branch therefore reports the same counts rather than ''.
+    // shownCards/shownPrims are already the full-set totals when term is empty,
+    // because every row hits — no second counting path is needed.
+    //
+    // "Showing all" is scoped to what this page lists, deliberately not to what
+    // the company has: a withheld package's primitives are not listed here, so
+    // wording like "all 73 primitives" would widen the claim past what Atlas
+    // can support. It describes the filter state, not completeness.
+    count.textContent =
+      (term === '' ? 'Showing all ' : '') +
       shownCards + ' package' + (shownCards === 1 ? '' : 's') +
       ', ' + shownPrims + ' primitive' + (shownPrims === 1 ? '' : 's');
   }
