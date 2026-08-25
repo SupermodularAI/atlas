@@ -1,6 +1,7 @@
 package harvest
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,44 @@ import (
 // if so, which pattern matched. Returning ("", false) means "not excluded".
 type WalkOptions struct {
 	Exclude func(relPath string) (pattern string, excluded bool)
+}
+
+// ErrEscapesRoot reports that content outside the walk root was reachable —
+// typically through a symlink like ".claude -> /Users/someone/private". This is
+// a disclosure control failing closed, and it must stay fatal: the operator
+// reviewed the repository, never the symlink's target, so publishing what lies
+// beyond it would list primitives nobody agreed to publish.
+//
+// NEVER downgrade this to a warning. It exists as a distinct sentinel purely so
+// that the degradation path for unusable files cannot swallow it by accident.
+var ErrEscapesRoot = errors.New("path escapes the walk root")
+
+// ErrUnusablePrimitive reports a data-quality problem in one harvested file:
+// frontmatter that will not parse, or a primitive with no description. Atlas
+// cannot name the primitive, so it does not list it — but the file's contents
+// are never published either way, so this is a fact to report rather than a
+// reason to abandon the run.
+//
+// This is the distinction that motivated the split. Both cases used to be plain
+// fmt.Errorf values, indistinguishable to errors.Is, and both aborted: one
+// malformed description in one file of one package meant no page at all, while
+// seven other packages harvested cleanly. §7 governs rendering — degradation is
+// recorded and made visible, never fatal — and this sentinel is what lets the
+// two follow opposite paths.
+var ErrUnusablePrimitive = errors.New("primitive cannot be used")
+
+// Unusable records one file WalkTree could not turn into a primitive, so the
+// caller can report it instead of failing. Path is relative to the walk root:
+// an absolute temp-clone path is noise on a page and changes every run, while
+// the relative path is what an operator needs to find the file in the repo.
+//
+// Reason carries the wrapped error's message. It is content-free by
+// construction — see frontmatterParseError, which deliberately omits the
+// offending text so a confidential description cannot reach a rendered page
+// through an error string.
+type Unusable struct {
+	Path   string
+	Reason string
 }
 
 // Duplicate records a Type+Name collision between the two bases WalkTree
@@ -65,13 +104,14 @@ type Duplicate struct {
 // duplicated: nil means "not harvested" in atlas.json, and a successful walk
 // — even of an empty tree, even with nothing to report — must not claim
 // that.
-func WalkTree(root string, opts WalkOptions) ([]model.Primitive, []string, []Duplicate, error) {
+func WalkTree(root string, opts WalkOptions) ([]model.Primitive, []string, []Duplicate, []Unusable, error) {
 	canonicalRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("resolve walk root %s: %w", root, err)
+		return nil, nil, nil, nil, fmt.Errorf("resolve walk root %s: %w", root, err)
 	}
 
 	found := []model.Primitive{}
+	unusable := []Unusable{}
 	matchedSet := map[string]struct{}{}
 
 	excluded := func(relPath string) bool {
@@ -103,10 +143,12 @@ func WalkTree(root string, opts WalkOptions) ([]model.Primitive, []string, []Dup
 		}
 		relToRoot, err := filepath.Rel(canonicalRoot, resolved)
 		if err != nil {
-			return fmt.Errorf("path %s escapes the walk root: %w", p, err)
+			return fmt.Errorf("path %s escapes the walk root: %w: %w",
+				p, ErrEscapesRoot, err)
 		}
 		if relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) || filepath.IsAbs(relToRoot) {
-			return fmt.Errorf("path %s escapes the walk root (resolves to %s)", p, resolved)
+			return fmt.Errorf("path %s escapes the walk root (resolves to %s): %w",
+				p, resolved, ErrEscapesRoot)
 		}
 		return nil
 	}
@@ -135,15 +177,56 @@ func WalkTree(root string, opts WalkOptions) ([]model.Primitive, []string, []Dup
 		found = append(found, prim)
 	}
 
+	// onUnusable is how a file Atlas cannot name stops being fatal. The skip has
+	// to happen inside walkBase, per file: readDescribed's error used to
+	// propagate all the way out of WalkTree, so the walk stopped at the first bad
+	// file and the caller lost every primitive in the package. Handling the
+	// sentinel one level up, at the caller, would still have cost 73 primitives
+	// to save one — collecting per file is what makes "72 of 73, and here is the
+	// file" possible.
+	//
+	// Paths are recorded relative to the walk root: an absolute temp-clone path
+	// is noise on a page and differs every run, while the relative path is what
+	// an operator needs to find the file in the repository.
+	onUnusable := func(path string, err error) {
+		// Relative to the ROOT AS GIVEN, not canonicalRoot: the walk builds its
+		// paths from root, and on a platform where the root passes through a
+		// symlink (macOS /var -> /private/var) resolving only one side yields a
+		// path full of ".." segments. Caught by a test asserting the path, which
+		// a test asserting only the count would have missed.
+		rp, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rp = path
+		}
+		// Strip the absolute path readDescribed prefixes for CLI locality. It is
+		// right there — a run-specific temp-clone path like
+		// /var/.../atlas-clone-3270124531/skills/glab/SKILL.md — and it is both
+		// noise on a page and different every build, so two runs of the same
+		// inventory would diff. Path already carries the location; Reason carries
+		// only the cause.
+		reason := err.Error()
+		if i := strings.Index(reason, ErrUnusablePrimitive.Error()+": "); i != -1 {
+			reason = reason[i+len(ErrUnusablePrimitive.Error())+2:]
+		} else if i := strings.LastIndex(reason, ": "+ErrUnusablePrimitive.Error()); i != -1 {
+			// The no-description form appends the sentinel instead of wrapping
+			// mid-message; keep the explanation, drop the path prefix and tag.
+			reason = strings.TrimPrefix(reason[:i], path+": ")
+		}
+		unusable = append(unusable, Unusable{
+			Path:   filepath.ToSlash(rp),
+			Reason: reason,
+		})
+	}
+
 	for _, base := range []string{root, filepath.Join(root, ".claude")} {
 		if err := withinRoot(base); err != nil {
-			return nil, nil, nil, err
+			return nil, nil, nil, nil, err
 		}
 		if st, err := os.Stat(base); err != nil || !st.IsDir() {
 			continue
 		}
-		if err := walkBase(root, base, excluded, withinRoot, addFound); err != nil {
-			return nil, nil, nil, err
+		if err := walkBase(root, base, excluded, withinRoot, addFound, onUnusable); err != nil {
+			return nil, nil, nil, nil, err
 		}
 	}
 
@@ -173,7 +256,11 @@ func WalkTree(root string, opts WalkOptions) ([]model.Primitive, []string, []Dup
 		return dups[i].Name < dups[j].Name
 	})
 
-	return found, matched, dups, nil
+	// Sorted so the rendered warnings are stable run to run: an operator
+	// comparing two builds should see a changed inventory, not reshuffled noise.
+	sort.Slice(unusable, func(i, j int) bool { return unusable[i].Path < unusable[j].Path })
+
+	return found, matched, dups, unusable, nil
 }
 
 // walkBase enumerates one root (either the tree root or its .claude
@@ -184,7 +271,7 @@ func WalkTree(root string, opts WalkOptions) ([]model.Primitive, []string, []Dup
 // an excluded path is never even resolved, preserving "excludes filter
 // before any file is read". addFound records a successfully read primitive,
 // applying cross-base dedupe.
-func walkBase(root, base string, excluded func(relPath string) bool, withinRoot func(string) error, addFound func(model.Primitive, string)) error {
+func walkBase(root, base string, excluded func(relPath string) bool, withinRoot func(string) error, addFound func(model.Primitive, string), onUnusable func(string, error)) error {
 	rel := func(p string) string {
 		r, err := filepath.Rel(root, p)
 		if err != nil {
@@ -217,7 +304,13 @@ func walkBase(root, base string, excluded func(relPath string) bool, withinRoot 
 			}
 			prim, err := readDescribed(p, model.TypeSkill, d.Name())
 			if err != nil {
-				return err
+				// One unusable file is reported and skipped; an escape or an
+				// unanticipated error still aborts (see readDescribed).
+				if !errors.Is(err, ErrUnusablePrimitive) {
+					return err
+				}
+				onUnusable(p, err)
+				continue
 			}
 			if prim != nil {
 				addFound(*prim, p)
@@ -253,7 +346,13 @@ func walkBase(root, base string, excluded func(relPath string) bool, withinRoot 
 			}
 			prim, err := readDescribed(p, typ, strings.TrimSuffix(e.Name(), ".md"))
 			if err != nil {
-				return err
+				// One unusable file is reported and skipped; an escape or an
+				// unanticipated error still aborts (see readDescribed).
+				if !errors.Is(err, ErrUnusablePrimitive) {
+					return err
+				}
+				onUnusable(p, err)
+				continue
 			}
 			if prim != nil {
 				addFound(*prim, p)
@@ -302,9 +401,14 @@ func walkBase(root, base string, excluded func(relPath string) bool, withinRoot 
 	return nil
 }
 
-// readDescribed reads a frontmatter-bearing primitive. A primitive with no
-// description fails the build: the upstream emitter throws rather than ship
-// an undescribed package, and Atlas takes the same posture.
+// readDescribed reads a frontmatter-bearing primitive.
+//
+// A file Atlas cannot name — unparseable frontmatter, or no description — is
+// not listed, because a primitive it cannot name is one it must not silently
+// present. Both cases are tagged ErrUnusablePrimitive so the caller can report
+// the file and carry on; neither is a reason to abandon the whole atlas. A read
+// error that is not one of those two stays untagged and therefore fatal, which
+// is the fail-closed default for anything unanticipated.
 func readDescribed(p, typ, fallbackName string) (*model.Primitive, error) {
 	content, err := os.ReadFile(p)
 	if err != nil {
@@ -320,11 +424,11 @@ func readDescribed(p, typ, fallbackName string) (*model.Primitive, error) {
 		// error is already content-free by construction (see
 		// frontmatterParseError), so this adds locality without adding
 		// disclosure — a path is not file content.
-		return nil, fmt.Errorf("%s: %w", p, err)
+		return nil, fmt.Errorf("%s: %w: %w", p, ErrUnusablePrimitive, err)
 	}
 	if strings.TrimSpace(desc) == "" {
-		return nil, fmt.Errorf("%s: %s %q has no description — add one before it can appear in an atlas",
-			p, typ, fallbackName)
+		return nil, fmt.Errorf("%s: %s %q has no description — add one before it can appear in an atlas: %w",
+			p, typ, fallbackName, ErrUnusablePrimitive)
 	}
 	if strings.TrimSpace(name) == "" {
 		name = fallbackName

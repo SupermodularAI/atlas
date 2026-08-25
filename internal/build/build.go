@@ -19,6 +19,7 @@ import (
 const (
 	WarningUnusedExclude      = "unused-exclude"
 	WarningDuplicatePrimitive = "duplicate-primitive"
+	WarningUnusablePrimitive  = "unusable-primitive"
 )
 
 // Collision kinds.
@@ -294,16 +295,18 @@ func buildMarketplace(src descriptor.Source, work string) (model.Source, []model
 		}
 		p.ResolvedSha = pc.Sha
 
-		prims, _, dups, err := harvest.WalkTree(pc.Dir, harvest.WalkOptions{})
+		prims, _, dups, unusable, err := harvest.WalkTree(pc.Dir, harvest.WalkOptions{})
 		gitc.Cleanup(pc)
 		if err != nil {
-			// A symlink escape (or an unreadable/undescribed primitive) is a
-			// hard failure for this source: the content came from outside
-			// the authorised root, so rendering it "restricted" would be a
-			// lie about why it is missing.
+			// Still fatal: a symlink escape means content came from outside the
+			// authorised root, so rendering the package "restricted" would be a
+			// lie about why it is missing. Anything unanticipated is fatal too —
+			// the fail-closed default. What is NO LONGER fatal is one file Atlas
+			// cannot name; WalkTree now reports those and keeps walking.
 			return ms, nil, nil, fmt.Errorf("harvest %s: %w", mp.Name, err)
 		}
 		warnings = append(warnings, duplicateWarnings(src.Name, dups)...)
+		warnings = append(warnings, unusableWarnings(src.Name, unusable)...)
 
 		p.Access = model.AccessPublic
 		p.Primitives = prims
@@ -351,7 +354,7 @@ func buildRepo(src descriptor.Source, work string) (model.Source, []model.Packag
 	// pattern be credited per call, so double-matching paths are tracked
 	// here rather than through WalkTree's own returned slice.
 	matchedExcludes := map[string]bool{}
-	prims, _, dups, err := harvest.WalkTree(clone.Dir, harvest.WalkOptions{
+	prims, _, dups, unusable, err := harvest.WalkTree(clone.Dir, harvest.WalkOptions{
 		Exclude: func(rel string) (string, bool) {
 			matched := false
 			var first string
@@ -368,10 +371,13 @@ func buildRepo(src descriptor.Source, work string) (model.Source, []model.Packag
 		},
 	})
 	if err != nil {
+		// Same split as the marketplace path: an escape or an unanticipated
+		// error aborts, one unnameable file does not.
 		return ms, nil, nil, fmt.Errorf("harvest %s: %w", src.Name, err)
 	}
 
 	var warnings []model.Warning
+	warnings = append(warnings, unusableWarnings(src.Name, unusable)...)
 	for _, pat := range src.Exclude {
 		if !matchedExcludes[pat] {
 			warnings = append(warnings, model.Warning{
@@ -403,6 +409,31 @@ func duplicateWarnings(source string, dups []harvest.Duplicate) []model.Warning 
 			Kind:   WarningDuplicatePrimitive,
 			Source: source,
 			Detail: fmt.Sprintf("duplicate %s %q: kept %s, dropped %s", d.Type, d.Name, d.Kept, d.Dropped),
+		})
+	}
+	return out
+}
+
+// unusableWarnings turns the files WalkTree could not name into warnings[]
+// entries.
+//
+// These carry the weight that used to be carried by aborting: the page must not
+// imply a complete listing when it is not one, so each entry names the file and
+// the reason. That is the condition on which rendering the package as "public"
+// with the bad files omitted is honest rather than misleading — a reader who
+// sees no warning is entitled to read the list as complete.
+//
+// The reason text is content-free by construction (see
+// harvest.frontmatterParseError): it reports that the frontmatter would not
+// parse, never the text that failed, so a confidential description cannot reach
+// the page through a warning.
+func unusableWarnings(source string, us []harvest.Unusable) []model.Warning {
+	var out []model.Warning
+	for _, u := range us {
+		out = append(out, model.Warning{
+			Kind:   WarningUnusablePrimitive,
+			Source: source,
+			Detail: fmt.Sprintf("%s: not listed — %s", u.Path, u.Reason),
 		})
 	}
 	return out

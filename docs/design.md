@@ -313,12 +313,31 @@ Schema decisions that must not be ambiguous, since they cannot be changed withou
 a version bump:
 
 - **`warnings[]` exists so a silently-ineffective control becomes visible.** It carries
-  `{kind, source, detail}`. Two kinds are defined:
+  `{kind, source, detail}`. Three kinds are defined:
 
   - **`unused-exclude`** — an `exclude:` pattern that matched nothing during the run.
   - **`duplicate-primitive`** — the same `Type`+`Name` found at both the package root and its
     `.claude/` subtree. One entry is kept (root wins) and the duplicate is reported rather than
     silently doubled or silently dropped, following §6's "Atlas reports; a resolver decides".
+  - **`unusable-primitive`** — a file Atlas could not turn into a primitive: frontmatter that
+    would not parse, or no description. The file is not listed, because a primitive Atlas
+    cannot name is one it must not silently present — but the run continues.
+
+    This one carries more weight than the other two, because it is what makes rendering the
+    package as `access: "public"` honest. A reader who sees no warning is entitled to read the
+    list as complete, so every omitted file must appear here with its path and reason. Without
+    that, "public" would quietly mean "public, minus whatever failed".
+
+    It replaces an abort. One malformed description in one file used to mean *no page at all*
+    while seven other packages harvested cleanly — the same trade-off `--strict` was kept out
+    of the publishing job to avoid, showing up where it was not anticipated. A symlink escape
+    stays fatal: that is a disclosure control, not a data-quality problem, and the two are now
+    separate sentinels (`harvest.ErrEscapesRoot`, `harvest.ErrUnusablePrimitive`) precisely so
+    the degradation path cannot swallow the one that must abort. Any error matching neither
+    sentinel is still fatal — the fail-closed default for anything unanticipated.
+
+    The `detail` names the file relative to the package root and states the cause, never the
+    text that failed to parse: a description can be confidential even when malformed.
 
   This field is in the schema from v1 deliberately. The exclude mechanism has now failed
   silently four times — repo mode enumerating raw trees, marketplace mode assuming the

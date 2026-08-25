@@ -1,6 +1,7 @@
 package harvest
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,7 +43,7 @@ func TestWalkFindsAllPrimitiveTypes(t *testing.T) {
 		"hooks/guard.sh":              "#!/bin/sh\necho hi",
 		".mcp.json":                   `{"mcpServers":{}}`,
 	})
-	got, _, _, err := WalkTree(root, WalkOptions{})
+	got, _, _, _, err := WalkTree(root, WalkOptions{})
 	if err != nil {
 		t.Fatalf("WalkTree: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestWalkFindsDotClaudeLayout(t *testing.T) {
 	root := tree(t, map[string]string{
 		".claude/skills/a/SKILL.md": "---\nname: a\ndescription: d\n---\nbody",
 	})
-	got, _, _, err := WalkTree(root, WalkOptions{})
+	got, _, _, _, err := WalkTree(root, WalkOptions{})
 	if err != nil {
 		t.Fatalf("WalkTree: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestWalkAppliesExclude(t *testing.T) {
 		"skills/finance-ops/SKILL.md": "---\nname: finance-ops\ndescription: secret\n---\nbody",
 		"skills/code-review/SKILL.md": "---\nname: code-review\ndescription: fine\n---\nbody",
 	})
-	got, _, _, err := WalkTree(root, WalkOptions{
+	got, _, _, _, err := WalkTree(root, WalkOptions{
 		Exclude: func(rel string) (string, bool) {
 			if rel == "skills/finance-ops/SKILL.md" {
 				return "skills/finance-ops/*", true
@@ -91,17 +92,142 @@ func TestWalkAppliesExclude(t *testing.T) {
 	}
 }
 
-func TestWalkSkillMissingDescriptionIsError(t *testing.T) {
+// An undescribed primitive is still never LISTED — Atlas cannot name it, so it
+// must not present it. What changed is that this no longer aborts: the file is
+// reported and the walk continues. The old assertion here was that WalkTree
+// returned an error; keeping it would have pinned the behaviour that made one
+// bad file cost a whole page.
+func TestWalkSkillMissingDescriptionIsReportedNotFatal(t *testing.T) {
 	root := tree(t, map[string]string{
 		"skills/a/SKILL.md": "---\nname: a\n---\nbody",
 	})
-	if _, _, _, err := WalkTree(root, WalkOptions{}); err == nil {
-		t.Fatal("expected error: a described-nothing primitive must fail closed")
+	got, _, _, unusable, err := WalkTree(root, WalkOptions{})
+	if err != nil {
+		t.Fatalf("an undescribed primitive must not abort the walk: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("an undescribed primitive must not be listed, got %v", names(got))
+	}
+	if len(unusable) != 1 {
+		t.Fatalf("want 1 unusable file reported, got %d", len(unusable))
+	}
+	if unusable[0].Path != "skills/a/SKILL.md" {
+		t.Errorf("want the relative path, got %q", unusable[0].Path)
+	}
+	if !strings.Contains(unusable[0].Reason, "no description") {
+		t.Errorf("the reason must say what is wrong, got %q", unusable[0].Reason)
+	}
+}
+
+// The whole point of the change: a package with one bad file still publishes
+// every good primitive in it. Before, the walk stopped at the first failure and
+// the caller got nothing.
+func TestWalkKeepsGoodPrimitivesAlongsideABadOne(t *testing.T) {
+	root := tree(t, map[string]string{
+		"skills/good-one/SKILL.md": "---\nname: good-one\ndescription: Fine.\n---\nbody",
+		// Unquoted value containing ": " — the exact shape that blocked the
+		// real marketplace run.
+		"skills/broken/SKILL.md":   "---\nname: broken\ndescription: Use it for x: y\n---\nbody",
+		"skills/good-two/SKILL.md": "---\nname: good-two\ndescription: Also fine.\n---\nbody",
+	})
+	got, _, _, unusable, err := WalkTree(root, WalkOptions{})
+	if err != nil {
+		t.Fatalf("one unparseable file must not abort the walk: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want the 2 good primitives, got %v", names(got))
+	}
+	if len(unusable) != 1 || unusable[0].Path != "skills/broken/SKILL.md" {
+		t.Fatalf("want only skills/broken reported, got %+v", unusable)
+	}
+}
+
+// The interaction that matters most: a tree containing BOTH an escape and an
+// unusable file must still abort. The degradation path is new, and this is what
+// proves it cannot mask a disclosure control — a run that reported the bad
+// frontmatter and quietly harvested the escaped tree would be the worst
+// possible outcome of this change.
+func TestEscapeStillAbortsEvenAlongsideUnusableFiles(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "leak.md"),
+		[]byte("---\nname: leak\ndescription: SHOULD NOT BE HARVESTED\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	root := tree(t, map[string]string{
+		"skills/fine/SKILL.md":   "---\nname: fine\ndescription: Fine.\n---\nbody",
+		"skills/broken/SKILL.md": "---\nname: broken\ndescription: bad: value\n---\nbody",
+	})
+	if err := os.Symlink(outside, filepath.Join(root, ".claude")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	got, _, _, unusable, err := WalkTree(root, WalkOptions{})
+	if err == nil {
+		t.Fatalf("an escape must abort even when unusable files are present; got %v", names(got))
+	}
+	if !errors.Is(err, ErrEscapesRoot) {
+		t.Errorf("want ErrEscapesRoot, got %v", err)
+	}
+	if len(unusable) != 0 {
+		t.Errorf("an aborting run must not return partial results, got %+v", unusable)
+	}
+	for _, p := range got {
+		if p.Description == "SHOULD NOT BE HARVESTED" {
+			t.Fatal("the escaped tree was harvested")
+		}
+	}
+}
+
+// Path carries the location, Reason carries the cause. Without this the reason
+// embedded the absolute temp-clone path readDescribed adds for CLI locality —
+// run-specific noise that made two builds of the same inventory diff.
+func TestUnusableReasonOmitsThePath(t *testing.T) {
+	root := tree(t, map[string]string{
+		"skills/a/SKILL.md": "---\nname: a\ndescription: x: y\n---\nbody",
+		"skills/b/SKILL.md": "---\nname: b\n---\nbody",
+	})
+	_, _, _, unusable, err := WalkTree(root, WalkOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unusable) != 2 {
+		t.Fatalf("want both files reported, got %d", len(unusable))
+	}
+	for _, u := range unusable {
+		if strings.Contains(u.Reason, root) || strings.Contains(u.Reason, "/var/") {
+			t.Errorf("reason for %s carries an absolute path: %q", u.Path, u.Reason)
+		}
+		if strings.Contains(u.Reason, ErrUnusablePrimitive.Error()) {
+			t.Errorf("reason for %s leaks the sentinel text: %q", u.Path, u.Reason)
+		}
+		if strings.TrimSpace(u.Reason) == "" {
+			t.Errorf("reason for %s is empty — it must still say what is wrong", u.Path)
+		}
+	}
+}
+
+// The reason string reaches a rendered page, so it must not carry the text that
+// failed to parse — a description can be confidential even when the file is
+// malformed.
+func TestUnusableReasonCarriesNoFileContent(t *testing.T) {
+	const secret = "MERGER-WITH-INITECH"
+	root := tree(t, map[string]string{
+		"skills/a/SKILL.md": "---\nname: a\ndescription: plan for " + secret + ": phase one\n---\nbody",
+	})
+	_, _, _, unusable, err := WalkTree(root, WalkOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unusable) != 1 {
+		t.Fatalf("want the file reported, got %d", len(unusable))
+	}
+	if strings.Contains(unusable[0].Reason, secret) {
+		t.Errorf("the reason leaked file content: %q", unusable[0].Reason)
 	}
 }
 
 func TestWalkEmptyTreeReturnsEmptyNotNil(t *testing.T) {
-	got, matched, dups, err := WalkTree(t.TempDir(), WalkOptions{})
+	got, matched, dups, _, err := WalkTree(t.TempDir(), WalkOptions{})
 	if err != nil {
 		t.Fatalf("WalkTree: %v", err)
 	}
@@ -137,7 +263,7 @@ func TestWalkReportsMatchedExcludePatterns(t *testing.T) {
 	const matchingPattern = "skills/finance-ops/*"
 	const unusedPattern = "skils/*" // typo'd, well-formed, matches nothing
 
-	_, matched, _, err := WalkTree(root, WalkOptions{
+	_, matched, _, _, err := WalkTree(root, WalkOptions{
 		Exclude: func(rel string) (string, bool) {
 			if rel == "skills/finance-ops/SKILL.md" {
 				return matchingPattern, true
@@ -163,7 +289,7 @@ func TestWalkDedupesAndSortsMatchedExcludePatterns(t *testing.T) {
 		"skills/a/SKILL.md": "---\nname: a\ndescription: d\n---\nbody",
 		"skills/b/SKILL.md": "---\nname: b\ndescription: d\n---\nbody",
 	})
-	_, matched, _, err := WalkTree(root, WalkOptions{
+	_, matched, _, _, err := WalkTree(root, WalkOptions{
 		Exclude: func(rel string) (string, bool) {
 			// Both paths excluded by the SAME pattern: must appear once, sorted.
 			return "skills/*", true
@@ -195,9 +321,22 @@ func TestWalkRejectsDotClaudeSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _, _, err := WalkTree(root, WalkOptions{})
+	got, _, _, unusable, err := WalkTree(root, WalkOptions{})
 	if err == nil {
 		t.Fatalf("expected an error for a .claude base escaping the walk root, got primitives %v", names(got))
+	}
+	// An escape is a disclosure control, not a data-quality problem. Asserting
+	// the sentinel is what stops it being reclassified into the degradation path
+	// added for unusable files: err != nil alone would still pass if this were
+	// downgraded to a warning that let the run continue.
+	if !errors.Is(err, ErrEscapesRoot) {
+		t.Errorf("an escape must be ErrEscapesRoot, got %v", err)
+	}
+	if errors.Is(err, ErrUnusablePrimitive) {
+		t.Error("an escape must never be reported as merely unusable — that path is non-fatal")
+	}
+	if len(unusable) != 0 {
+		t.Errorf("an escape must abort, not accumulate: got %+v", unusable)
 	}
 	if !strings.Contains(err.Error(), filepath.Join(root, ".claude")) {
 		t.Fatalf("error must name the offending path (%s), got: %v", filepath.Join(root, ".claude"), err)
@@ -224,9 +363,20 @@ func TestWalkRejectsDeeperSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _, _, err := WalkTree(root, WalkOptions{})
+	got, _, _, unusable, err := WalkTree(root, WalkOptions{})
 	if err == nil {
 		t.Fatalf("expected an error for a deeper symlink escaping the walk root, got primitives %v", names(got))
+	}
+	// Same reasoning as the base-level case: pin the sentinel, so a deeper
+	// escape cannot be reclassified as merely unusable and become non-fatal.
+	if !errors.Is(err, ErrEscapesRoot) {
+		t.Errorf("an escape must be ErrEscapesRoot, got %v", err)
+	}
+	if errors.Is(err, ErrUnusablePrimitive) {
+		t.Error("an escape must never be reported as merely unusable — that path is non-fatal")
+	}
+	if len(unusable) != 0 {
+		t.Errorf("an escape must abort, not accumulate: got %+v", unusable)
 	}
 	if !strings.Contains(err.Error(), evilSkill) {
 		t.Fatalf("error must name the offending path (%s), got: %v", evilSkill, err)
@@ -256,7 +406,7 @@ func TestWalkFollowsSymlinkWithinRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _, _, err := WalkTree(root, WalkOptions{})
+	got, _, _, _, err := WalkTree(root, WalkOptions{})
 	if err != nil {
 		t.Fatalf("WalkTree: %v", err)
 	}
@@ -275,7 +425,7 @@ func TestWalkReportsDuplicateAcrossBases(t *testing.T) {
 		"skills/dup/SKILL.md":         "---\nname: dup\ndescription: from root\n---\nbody",
 		".claude/skills/dup/SKILL.md": "---\nname: dup\ndescription: from dotclaude\n---\nbody",
 	})
-	got, _, dups, err := WalkTree(root, WalkOptions{})
+	got, _, dups, _, err := WalkTree(root, WalkOptions{})
 	if err != nil {
 		t.Fatalf("WalkTree: %v", err)
 	}
@@ -308,7 +458,7 @@ func TestWalkSameNameDifferentTypeIsNotADuplicate(t *testing.T) {
 		"skills/x/SKILL.md": "---\nname: x\ndescription: a skill named x\n---\nbody",
 		"hooks/x":           "#!/bin/sh\necho hi",
 	})
-	got, _, dups, err := WalkTree(root, WalkOptions{})
+	got, _, dups, _, err := WalkTree(root, WalkOptions{})
 	if err != nil {
 		t.Fatalf("WalkTree: %v", err)
 	}
@@ -327,7 +477,7 @@ func TestWalkNoDuplicateWhenBasesDistinct(t *testing.T) {
 		"skills/a/SKILL.md":         "---\nname: a\ndescription: from root\n---\nbody",
 		".claude/skills/b/SKILL.md": "---\nname: b\ndescription: from dotclaude\n---\nbody",
 	})
-	got, _, dups, err := WalkTree(root, WalkOptions{})
+	got, _, dups, _, err := WalkTree(root, WalkOptions{})
 	if err != nil {
 		t.Fatalf("WalkTree: %v", err)
 	}
