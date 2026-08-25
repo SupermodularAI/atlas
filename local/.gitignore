@@ -1,0 +1,15 @@
+# NOTHING in this directory is committed except this file.
+#
+# The descriptors here name a private GitLab namespace and the packages that are
+# deliberately withheld from the published page. Atlas is a generic tool; its
+# repo must not carry one company's inventory, and internal/guard has a test
+# that fails the build on org strings in source for exactly that reason.
+#
+# check.sh and the descriptors live here so the harness sits beside the code it
+# exercises, but they stay untracked. If this harness is ever worth sharing,
+# commit a descriptor with placeholder names — not these.
+#
+# Also ignored for the ordinary reasons: the binary (built on every run, so a
+# checked-in one could silently report on stale code) and out-*/ pages.
+*
+!.gitignore
