@@ -89,7 +89,16 @@ func cloneArgs(url, ref, dir string) []string {
 // Reuses run(), so the same hardening applies: no credential prompt, and global
 // and system git config neutralised.
 func RefExists(url, ref string) (bool, error) {
-	out, err := run("", "ls-remote", "--exit-code", url, ref)
+	// "--" before the operands is load-bearing, not style. url and ref come from
+	// a third-party manifest, and git parses a leading "-" as a FLAG rather than as
+	// a repository: a sourceBase of "--upload-pack=<cmd>" would otherwise be handed
+	// to git as an option, which is remote code execution by way of a YAML file.
+	// Confirmed empirically — `git ls-remote --exit-code --help` prints git's usage,
+	// while with "--" the same string is treated as a URL.
+	//
+	// cloneArgs already did exactly this; RefExists failed to follow it. Any future
+	// git call in this package must pass its operands after "--".
+	out, err := run("", "ls-remote", "--exit-code", "--", url, ref)
 	if err == nil {
 		return true, nil
 	}
