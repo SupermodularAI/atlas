@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/SupermodularAI/atlas/internal/harvest"
+
 	"github.com/SupermodularAI/atlas/internal/build"
 	"github.com/SupermodularAI/atlas/internal/descriptor"
 	"github.com/SupermodularAI/atlas/internal/render"
@@ -54,6 +56,47 @@ func main() {
 	root.Flags().BoolVar(&strict, "strict", false, "exit non-zero if any source or package degraded, or any warning was recorded")
 	_ = root.MarkFlagRequired("descriptor")
 	_ = root.MarkFlagRequired("out")
+
+	// `atlas check` is the authoring-side gate for the publishing-side reader.
+	//
+	// It lives in Atlas rather than as a script in each package repo so that the
+	// gate and the consumer share one YAML parser. A checker built on a different
+	// implementation can disagree at the margins, and a gate that passes what the
+	// page then rejects is worse than no gate: it teaches confidence it has not
+	// earned. It also means eight content-only repos need no new dependency.
+	check := &cobra.Command{
+		Use:   "check [dir]",
+		Short: "Report frontmatter that would stop a primitive being listed, or list it wrongly",
+		Long: "Walks a tree and reports every primitive whose frontmatter Atlas could not\n" +
+			"read, or could read only partially.\n\n" +
+			"Two failure modes, and the second is why this is not merely a parse check:\n" +
+			"an unquoted value containing \": \" is INVALID YAML and the primitive is\n" +
+			"omitted; an unquoted value containing \"#\" is VALID YAML, silently truncated\n" +
+			"at the \"#\", and is listed wrongly with nothing reported anywhere.\n\n" +
+			"Exits non-zero if anything is found, so it can gate a merge request.",
+		Args:         cobra.MaximumNArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dir := "."
+			if len(args) == 1 {
+				dir = args[0]
+			}
+			defects, checked, err := harvest.Lint(dir)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("checked %d primitive frontmatter block(s) under %s\n", checked, dir)
+			if len(defects) == 0 {
+				fmt.Println("frontmatter OK")
+				return nil
+			}
+			for _, d := range defects {
+				fmt.Fprintf(os.Stderr, "  %s\n      %s\n", d.Path, d.Reason)
+			}
+			return fmt.Errorf("%d frontmatter problem(s) — quote the value in double quotes", len(defects))
+		},
+	}
+	root.AddCommand(check)
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "atlas:", err)
