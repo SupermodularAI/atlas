@@ -10,7 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/SupermodularAI/atlas/internal/gitc"
 	"github.com/SupermodularAI/atlas/internal/harvest"
+	"github.com/SupermodularAI/atlas/internal/resolve"
 
 	"github.com/SupermodularAI/atlas/internal/build"
 	"github.com/SupermodularAI/atlas/internal/descriptor"
@@ -28,9 +30,10 @@ var version = "dev"
 
 func main() {
 	var (
-		descPath string
-		outDir   string
-		strict   bool
+		descPath     string
+		outDir       string
+		strict       bool
+		manifestPath string
 	)
 	root := &cobra.Command{
 		Use:   "atlas",
@@ -77,6 +80,9 @@ func main() {
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if manifestPath != "" {
+				return checkManifest(manifestPath)
+			}
 			dir := "."
 			if len(args) == 1 {
 				dir = args[0]
@@ -96,6 +102,8 @@ func main() {
 			return fmt.Errorf("%d frontmatter problem(s) — quote the value in double quotes", len(defects))
 		},
 	}
+	check.Flags().StringVar(&manifestPath, "manifest", "",
+		"instead of linting a tree, verify every package version in this marketplace manifest resolves to a real tag")
 	root.AddCommand(check)
 
 	if err := root.Execute(); err != nil {
@@ -112,6 +120,71 @@ func main() {
 // Degradation (an unavailable source, a restricted package, or a recorded
 // warning) never aborts the run on its own: it is always reported on stderr,
 // and only turns the run non-zero when strict is true.
+// checkManifest verifies that every version pinned in a marketplace manifest
+// resolves to a tag that actually exists upstream.
+//
+// This closes a failure mode that reports nothing at all. tagPattern turns each
+// package's `version:` into the ref Atlas fetches, so those pins are the ONLY
+// thing selecting content. Two ways that goes wrong silently:
+//
+//   - a package is re-tagged upstream but not bumped here. Atlas keeps reading
+//     the OLD tag, successfully. Nobody sees the new content and nothing errors.
+//   - a version is bumped here but never tagged upstream. Nothing complains
+//     until something tries to fetch it.
+//
+// Neither is visible by reading either repo alone, which is why the check has to
+// compare the two. It uses ls-remote, so it costs no clone.
+func checkManifest(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read manifest: %w", err)
+	}
+	man, err := resolve.ParseManifest(data)
+	if err != nil {
+		return err
+	}
+	if man.TagPattern == "" {
+		fmt.Printf("%s pins no tagPattern — versions do not select a ref, nothing to verify\n", path)
+		return nil
+	}
+
+	var problems []string
+	for _, pkg := range man.Packages {
+		url, uerr := man.ResolveURL(pkg)
+		if uerr != nil {
+			problems = append(problems, fmt.Sprintf("%s: %v", pkg.Name, uerr))
+			continue
+		}
+		ref := man.ResolveRef(pkg)
+		if ref == "" {
+			fmt.Printf("  %-24s no version pinned — resolves to the default branch\n", pkg.Name)
+			continue
+		}
+		ok, rerr := gitc.RefExists(url, "refs/tags/"+ref)
+		switch {
+		case rerr != nil:
+			// An unreachable remote is not the same finding as a missing tag,
+			// and must not be reported as one.
+			problems = append(problems, fmt.Sprintf("%s: could not verify %s (%v)", pkg.Name, ref, rerr))
+		case !ok:
+			problems = append(problems, fmt.Sprintf(
+				"%s: pinned %q but tag %s does not exist upstream", pkg.Name, pkg.Version, ref))
+		default:
+			fmt.Printf("  %-24s %s\n", pkg.Name, ref)
+		}
+	}
+
+	fmt.Printf("checked %d package pin(s) in %s\n", len(man.Packages), path)
+	if len(problems) == 0 {
+		fmt.Println("every pinned version resolves to a real tag")
+		return nil
+	}
+	for _, p := range problems {
+		fmt.Fprintln(os.Stderr, "  "+p)
+	}
+	return fmt.Errorf("%d package pin(s) do not resolve", len(problems))
+}
+
 func run(descPath, outDir string, strict bool) error {
 	d, err := descriptor.Load(descPath)
 	if err != nil {

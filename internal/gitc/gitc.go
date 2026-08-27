@@ -79,6 +79,38 @@ func cloneArgs(url, ref, dir string) []string {
 
 // run executes git with global/system config neutralised, so a developer's
 // personal git config cannot change what Atlas reads.
+// RefExists reports whether ref resolves at url, without cloning.
+//
+// A pinned version whose tag does not exist upstream is silent until something
+// tries to fetch it — and the reverse is worse: a package tagged upstream but
+// not bumped in the manifest leaves the consumer reading the OLD tag,
+// successfully, reporting nothing. ls-remote answers both cheaply.
+//
+// Reuses run(), so the same hardening applies: no credential prompt, and global
+// and system git config neutralised.
+func RefExists(url, ref string) (bool, error) {
+	out, err := run("", "ls-remote", "--exit-code", url, ref)
+	if err == nil {
+		return true, nil
+	}
+	// --exit-code makes git exit 2 for "no matching ref", which is an answer,
+	// not a failure. Anything else (auth, network, bad URL) is a real error and
+	// must not be reported as "the tag is missing".
+	if exitCode(err) == 2 || isRefNotFound(out) {
+		return false, nil
+	}
+	return false, fmt.Errorf("ls-remote %s %s: %s", url, ref, failureReason(out))
+}
+
+// exitCode extracts a process exit status, or -1 when err is not an ExitError.
+func exitCode(err error) int {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
 func run(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	if _, err := os.Stat(dir); err == nil {
