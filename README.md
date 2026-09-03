@@ -43,6 +43,10 @@ Descriptors belong in the company's own repo, not here.
 
 - `docs/design.md` — the full design and the reasoning behind it
 - `examples/` — a runnable fixture needing no access to anything private
+- `CONTRIBUTING.md` — how to build, test, and what reviews enforce
+- `SECURITY.md` — how to report a vulnerability privately
+- `CODE_OF_CONDUCT.md` — the standards expected of everyone taking part
+- `CHANGELOG.md` — what has changed
 
 ## License
 

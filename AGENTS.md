@@ -74,8 +74,12 @@ report rather than reporting a false PASS.
 
 ## Off-limits paths
 
-- `.agent/skills/ — vendored SDLC pipeline skills, never hand-edited here`
-- `.claude/skills — a symlink to .agent/skills, never replaced with a real directory`
+- `.agent/skills/ — vendored SDLC pipeline skills, never hand-edited here. Gitignored:
+  this repo is not their source of truth, and they describe a forge, a multi-repo
+  workspace and design assets a public clone does not have. Present locally, not published.`
+- `.claude/skills — a symlink to .agent/skills, never replaced with a real directory.
+  Also gitignored — but ignore it by name, never the whole .claude/ directory, which
+  holds the tracked CLAUDE.md symlink.`
 - `docs/design.md — the approved design; propose changes in the report, do not edit it`
 
 ## Branch & commit policy
@@ -94,13 +98,14 @@ report rather than reporting a false PASS.
 | Role | Configured? | Concrete tool |
 | ---- | ----------- | ------------- |
 | **Issue tracker + linked docs** (ingest) | no | None. Work is driven by `docs/design.md` and per-task plans seeded into `.agent/work/<TICKET>/`. |
-| **Code forge** (push, PR, review threads) | no | None. Atlas has **no remote**: it is built locally and published later. Do not add a remote, push, or open a PR. |
+| **Code forge** (push, PR, review threads) | yes | GitHub — `SupermodularAI/atlas`, `origin`, default branch `main`. Use `gh` for PRs and review threads. |
 | **Static analysis** (pr-review) | no | None beyond `go vet ./...`. |
 | **Design source** (gather-context, implement-from-design) | no | None. Atlas has no UI design assets. |
 | **Browser automation** (verify-changes behavioral gate, frontend) | no | None. Atlas emits a static file; confirm it by rendering and reading the HTML, not by driving a browser. |
 
-Because the forge is **not configured**, the `pr-describe-draft` stage does not apply.
-`pr-review` runs against the local diff (`git diff main...HEAD`) rather than a PR.
+The forge **is** configured, so `pr-describe-draft` applies and `pr-review` may run
+against a real PR. Before a PR exists, `pr-review` still runs against the local diff
+(`git diff main...HEAD`).
 
 ## Architecture decisions
 

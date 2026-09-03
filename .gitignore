@@ -1,4 +1,13 @@
 /atlas
 /dist/
 *.test
-.agent/work/
+
+# Vendored SDLC pipeline skills and their per-ticket working files.
+# The skills are vendored from another repo, so this repo is not their source of
+# truth: tracking them would ship ~1k lines Atlas did not author under Atlas's
+# own LICENSE, and would point contributors at a forge, a multi-repo workspace
+# and design assets that a public clone of Atlas does not have. They stay on
+# disk and keep working locally; they are simply not part of the published
+# artifact. Untracked rather than deleted, so re-vendoring stays a no-op.
+.agent/
+.claude/skills

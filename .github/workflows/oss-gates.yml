@@ -1,0 +1,142 @@
+# Open-source gates: the properties that must keep holding now Atlas is public.
+#
+# Three checks, each blocking:
+#   secrets   — nothing new ever fails a secret scan (full history on push)
+#   vulns     — no known vulnerability reaches a release
+#   commits   — Conventional Commits stays true without a hand audit
+#
+# The one-time readiness scan that preceded this lives in
+# gitlab.com/supermodularai/core/devex/ci-templates (oss-prep.yml). That one
+# reports and stops; these gate.
+name: OSS gates
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oss-gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 so the scan covers history, not just the tip. A secret
+      # added and then removed in the same PR is still a leak once published.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # The gitleaks BINARY, not gitleaks-action. The action requires a paid
+      # licence for organisation repos (GITLEAKS_LICENSE); the binary is the
+      # same scanner under MIT with no such gate. Version pinned so a CI result
+      # depends on this repo's code, not on when the job ran.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          set -euo pipefail
+          curl -sSfL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          chmod +x /tmp/gitleaks
+          /tmp/gitleaks version
+
+      # `git` mode scans history via git log, not just the worktree, and exits
+      # non-zero on any finding -- which is what makes this a gate.
+      - name: Scan history for secrets
+        run: |
+          /tmp/gitleaks git . \
+            --log-opts="--all" \
+            --report-format json \
+            --report-path gitleaks-report.json \
+            --redact \
+            --verbose
+
+      # Only reached when the scan failed, so the report is worth keeping.
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks-report.json
+          if-no-files-found: ignore
+
+  vulns:
+    name: Dependency vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # govulncheck consults the Go vulnerability database and reports only
+      # vulnerabilities actually reachable from this code, so a finding here is
+      # actionable rather than advisory.
+      # Pinned, per AGENTS.md's exact-pins-only rule: @latest would make a CI
+      # failure depend on when it ran rather than on this repo's code.
+      - name: govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
+  commits:
+    name: Conventional Commits
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Commit subjects are attacker-controlled text. They are read from git
+      # into a file and parsed there -- never interpolated into a shell command
+      # -- so a subject containing shell metacharacters cannot execute.
+      # Merge commits are excluded: Conventional Commits does not apply to them
+      # and commitlint's default configuration ignores them too.
+      - name: Check subjects on this PR
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          git log --no-merges --format=%s "${BASE_SHA}..${HEAD_SHA}" > subjects.txt
+
+          if [ ! -s subjects.txt ]; then
+            echo "No non-merge commits to check."
+            exit 0
+          fi
+
+          # type(optional-scope)!: description
+          pattern='^(feat|fix|docs|chore|test|refactor|perf|build|ci|style|revert)(\([a-z0-9._-]+\))?!?: .+'
+          status=0
+
+          while IFS= read -r subject; do
+            if ! printf '%s' "$subject" | grep -qE "$pattern"; then
+              echo "::error::Not a Conventional Commit subject: $subject"
+              status=1
+              continue
+            fi
+            # AGENTS.md: subject <= 72 chars.
+            length=${#subject}
+            if [ "$length" -gt 72 ]; then
+              echo "::warning::Subject is ${length} chars (AGENTS.md asks for <= 72): $subject"
+            fi
+          done < subjects.txt
+
+          if [ "$status" -ne 0 ]; then
+            echo ""
+            echo "Expected: <type>(<scope>): <description>"
+            echo "Types: feat fix docs chore test refactor perf build ci style revert"
+            echo "See CONTRIBUTING.md."
+          fi
+          exit "$status"
