@@ -39,6 +39,24 @@ make all       # lint + test + build
 in a temp dir and renders a catalog from them. It needs **no network and no private
 access** — if it fails on a clean checkout, that is a bug worth reporting.
 
+## The two commands Atlas ships
+
+Worth knowing before changing either, since they have different audiences:
+
+```bash
+atlas --descriptor company.yml --out ./site   # render a catalog
+atlas check [dir]                             # lint primitive frontmatter
+atlas check --manifest apm.yml                # verify manifest pins resolve to real tags
+```
+
+`atlas` renders; `atlas check` is the **authoring-side gate for the
+publishing-side reader** — it runs in a package or marketplace repo's CI, not
+in Atlas's. It exits non-zero on any finding so it can gate a merge request.
+If you change what Atlas reads, check whether `check` needs to grow a
+corresponding assertion: the two are meant to stay in step, and a reader that
+tolerates something the gate doesn't flag is how silent defects reach a
+catalog.
+
 Formatting is plain `gofmt`:
 
 ```bash
