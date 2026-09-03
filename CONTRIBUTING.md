@@ -48,6 +48,11 @@ test -z "$(gofmt -l .)" # check
 
 Before opening a PR, `make all && make example` should pass.
 
+CI runs the same gates on every PR (`.github/workflows/ci.yml`), plus three
+open-source gates (`.github/workflows/oss-gates.yml`): a secret scan over
+history, `govulncheck` against dependencies, and a Conventional Commits check on
+your commit subjects. Merge commits are exempt from that last one.
+
 ## Tests live next to the code
 
 Unit tests are **colocated** and in the **same package** as their source, so
