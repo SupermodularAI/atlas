@@ -4,6 +4,9 @@ Thanks for your interest in Atlas. This document covers what you need to build i
 what the gates check, and the three project rules that are easiest to violate with
 good intentions.
 
+By taking part you agree to abide by our `CODE_OF_CONDUCT.md`. Notable changes go
+in `CHANGELOG.md` under `## [Unreleased]`.
+
 Read `docs/design.md` before changing behaviour. Several decisions in it are
 load-bearing and covered by tests — a change that looks like a cleanup can quietly
 break a guarantee. The design's numbered sections are treated as binding
