@@ -26,6 +26,26 @@ values become a public contract that cannot change without a version bump — se
   - `--strict` — exit non-zero if any source or package degraded, or any warning
     was recorded
 
+- **`atlas check`** — the authoring-side gate for the publishing-side reader.
+  Exits non-zero on any finding, so it can gate a merge request.
+
+  ```bash
+  atlas check [dir]            # lint primitive frontmatter under a tree
+  atlas check --manifest FILE  # verify every pinned version resolves to a real tag
+  ```
+
+  Frontmatter linting catches two failure modes, and the second is why this is
+  more than a parse check: an unquoted value containing `": "` is invalid YAML
+  and the primitive is omitted, while an unquoted value containing `"#"` is
+  *valid* YAML, silently truncated at the `#`, and gets listed wrongly with
+  nothing reported anywhere.
+
+  `--manifest` compares a marketplace manifest's pins against the tags that
+  actually exist upstream, over `ls-remote` (no clone). It closes two silent
+  drifts that are invisible from either repo alone: a package re-tagged upstream
+  but not bumped in the manifest (Atlas keeps reading the old tag, successfully),
+  and a version bumped in the manifest but never tagged upstream.
+
 - **Two input kinds.** A descriptor may list published APM marketplaces and
   plain repositories carrying a `.claude/` tree. A company can have more than
   one marketplace, and `exclude` entries apply to both kinds.
