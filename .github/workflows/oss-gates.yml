@@ -97,35 +97,55 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Commit subjects are attacker-controlled text. They are read from git
-      # into a file and parsed there -- never interpolated into a shell command
-      # -- so a subject containing shell metacharacters cannot execute.
-      # Merge commits are excluded: Conventional Commits does not apply to them
-      # and commitlint's default configuration ignores them too.
-      - name: Check subjects on this PR
+      # What lands on main is the SQUASH SUBJECT, and this repo is configured
+      # squash_merge_commit_title=COMMIT_OR_PR_TITLE. So the subject GitHub uses
+      # is the PR TITLE whenever the PR has more than one commit, and the single
+      # commit's own subject when it has exactly one. Checking only the commits
+      # therefore left the actual subject unverified on every multi-commit PR.
+      #
+      # The title and commit subjects are attacker-controlled text: a pull
+      # request from a fork can put $(...), backticks or a semicolon in one.
+      # They are written to a file and read back as data -- never interpolated
+      # into this script -- and every value arrives through env rather than
+      # inline ${{ }}, which would splice it into the shell source before it
+      # runs. Merge commits are excluded throughout: the Conventional Commits
+      # spec does not cover them and GitHub generates their subjects.
+      - name: Check the squash subject
         env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
 
-          git log --no-merges --format=%s "${BASE_SHA}..${HEAD_SHA}" > subjects.txt
+          # The PR title always needs to conform: it is the subject whenever the
+          # PR carries more than one commit.
+          printf '%s\n' "$PR_TITLE" > subjects.txt
 
-          if [ ! -s subjects.txt ]; then
-            echo "No non-merge commits to check."
-            exit 0
+          # With exactly one commit GitHub uses that commit's subject instead,
+          # so it has to conform too.
+          count="$(git rev-list --no-merges --count "${BASE_SHA}..${HEAD_SHA}")"
+          if [ "$count" -eq 1 ]; then
+            git log --no-merges --format=%s "${BASE_SHA}..${HEAD_SHA}" >> subjects.txt
           fi
 
           # type(optional-scope)!: description
           pattern='^(feat|fix|docs|chore|test|refactor|perf|build|ci|style|revert)(\([a-z0-9._-]+\))?!?: .+'
           status=0
+          seen=0
 
           while IFS= read -r subject; do
+            # Skip blank lines, but do NOT count them as checked: an empty PR
+            # title still writes a newline, so testing the file for content is
+            # not enough to know a subject was actually validated.
+            [ -n "$subject" ] || continue
+            seen=$((seen + 1))
             if ! printf '%s' "$subject" | grep -qE "$pattern"; then
               echo "::error::Not a Conventional Commit subject: $subject"
               status=1
               continue
             fi
+            printf 'ok   %s\n' "$subject"
             # AGENTS.md: subject <= 72 chars.
             length=${#subject}
             if [ "$length" -gt 72 ]; then
@@ -133,10 +153,18 @@ jobs:
             fi
           done < subjects.txt
 
+          # Fail closed. A gate that checked nothing must not report success:
+          # an empty or unreadable PR title would otherwise pass silently.
+          if [ "$seen" -eq 0 ]; then
+            echo "::error::no subject to check -- the PR title is empty or could not be read"
+            exit 1
+          fi
+
           if [ "$status" -ne 0 ]; then
             echo ""
             echo "Expected: <type>(<scope>): <description>"
             echo "Types: feat fix docs chore test refactor perf build ci style revert"
-            echo "See CONTRIBUTING.md."
+            echo "With more than one commit the squash subject is the PR title;"
+            echo "with exactly one it is that commit's subject. See CONTRIBUTING.md."
           fi
           exit "$status"
