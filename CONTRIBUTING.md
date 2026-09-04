@@ -162,6 +162,11 @@ output will be asked to remove it, even where the surrounding change is good.
   the primary change (`feat`, `fix`, `chore`, …).
 - **Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).**
   Subject ≤ 72 characters; body lines ≤ 100.
+- **Your PR title must follow Conventional Commits too.** PRs are squashed, and
+  the subject that lands on `main` is the PR title when the PR has more than one
+  commit, or that commit's subject when it has exactly one. CI checks whichever
+  one will actually be used, so a well-formed set of commits under a vague PR
+  title still fails.
 - Stage by explicit path. Please avoid `git add -A` / `git add .`.
 - Keep commits small and reviewable — one logical change each.
 
