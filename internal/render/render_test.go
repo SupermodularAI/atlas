@@ -394,10 +394,18 @@ func TestFilterAnnouncesWideningNotOnlyNarrowing(t *testing.T) {
 		t.Errorf("expected the unfiltered state to announce a non-empty count; got: %q", stmt)
 	}
 	// The node must be mutated in place. Replacing or re-creating a live region
-	// does not announce, so a refactor to innerHTML/replaceWith would silently
-	// undo this fix — and would breach the template's no-innerHTML rule besides.
+	// does not announce, so a refactor to assigned markup or replaceWith would
+	// silently undo this fix — and would breach the template's no-assigned-markup
+	// rule besides.
+	//
+	// Scoped to Atlas's own scripts rather than the whole page: since ADR-0001
+	// the page also carries vendored D3, whose selection.html() implementation
+	// contains the token internally. Scanning the whole document would fail on
+	// third-party bytes we do not control and cannot fix, which would say
+	// nothing about the behaviour under test. The guarantee is unchanged for
+	// every line Atlas emits.
 	for _, bad := range []string{"replaceWith", "createElement('span')", "innerHTML"} {
-		if strings.Contains(s, bad) {
+		if strings.Contains(atlasOwnScripts(t, s), bad) {
 			t.Errorf("live region must be mutated in place via textContent; found %q", bad)
 		}
 	}

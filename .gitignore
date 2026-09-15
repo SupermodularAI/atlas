@@ -2,6 +2,13 @@
 /dist/
 *.test
 
+# Browser-check leftovers. The radial view (ADR-0001) is verified by loading a
+# rendered page in a real browser; the MCP driver writes snapshots and
+# screenshots into the working directory as a side effect. They are evidence
+# from one run, not part of the repo.
+/.playwright-mcp/
+/*.png
+
 # Vendored SDLC pipeline skills and their per-ticket working files.
 # The skills are vendored from another repo, so this repo is not their source of
 # truth: tracking them would ship ~1k lines Atlas did not author under Atlas's
