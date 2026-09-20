@@ -394,10 +394,18 @@ func TestFilterAnnouncesWideningNotOnlyNarrowing(t *testing.T) {
 		t.Errorf("expected the unfiltered state to announce a non-empty count; got: %q", stmt)
 	}
 	// The node must be mutated in place. Replacing or re-creating a live region
-	// does not announce, so a refactor to innerHTML/replaceWith would silently
-	// undo this fix — and would breach the template's no-innerHTML rule besides.
+	// does not announce, so a refactor to assigned markup or replaceWith would
+	// silently undo this fix — and would breach the template's no-assigned-markup
+	// rule besides.
+	//
+	// Scoped to Atlas's own scripts rather than the whole page: since ADR-0001
+	// the page also carries vendored D3, whose selection.html() implementation
+	// contains the token internally. Scanning the whole document would fail on
+	// third-party bytes we do not control and cannot fix, which would say
+	// nothing about the behaviour under test. The guarantee is unchanged for
+	// every line Atlas emits.
 	for _, bad := range []string{"replaceWith", "createElement('span')", "innerHTML"} {
-		if strings.Contains(s, bad) {
+		if strings.Contains(atlasOwnScripts(t, s), bad) {
 			t.Errorf("live region must be mutated in place via textContent; found %q", bad)
 		}
 	}
@@ -1177,14 +1185,22 @@ func TestUnavailableSourceStubIsNotFilterable(t *testing.T) {
 
 	// Locate the unavailable source's section and confirm its stub card has
 	// no id, keeping it outside the filter's .card[id] set.
-	i := strings.Index(s, "could not be")
+	//
+	// Anchored forwards from the first source section rather than backwards
+	// from the stub's copy. The page carries prose before the sections (the
+	// radial legend, ADR-0001), so a backwards search from the first match of
+	// a phrase would silently start outside any section the moment that phrase
+	// appeared earlier — failing a §7 test with a message pointing at the
+	// template instead of at the copy that moved.
+	secStart := strings.Index(s, `<section class="src">`)
+	if secStart == -1 {
+		t.Fatal("no source section on the page")
+	}
+	i := strings.Index(s[secStart:], "could not be")
 	if i == -1 {
 		t.Fatal("the unavailable-source stub is missing from the page")
 	}
-	secStart := strings.LastIndex(s[:i], `<section class="src">`)
-	if secStart == -1 {
-		t.Fatal("the unavailable-source stub is not inside a source section")
-	}
+	i += secStart
 	secEnd := strings.Index(s[secStart:], "</section>")
 	if secEnd == -1 {
 		t.Fatal("unterminated source section")

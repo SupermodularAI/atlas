@@ -14,6 +14,35 @@ values become a public contract that cannot change without a version bump — se
 
 ### Added
 
+- **Radial map on the rendered page.** An interactive `source → package →
+  primitive` tree, drawn above the package cards. Drag to pan, scroll to zoom,
+  hover for detail, hover a source to dim the other branches, click a package to
+  jump to its card.
+
+  Node size encodes the number of primitives Atlas harvested — a figure already
+  published in `atlas.json`. It does not encode usage, popularity or approval:
+  sizing by any of those would widen the claim (design §9).
+
+  Packages Atlas could not read, and packages it was told to withhold, are drawn
+  as nodes carrying their own state rather than omitted — a tree that drew only
+  nodes with children would silently drop exactly the packages Atlas exists to
+  make visible (design §7). The two levels stay distinguishable, by dash pattern
+  as well as by colour.
+
+  The view is additive: with JavaScript disabled it stays hidden and the cards
+  below remain the complete, readable page.
+
+- **D3 v7.9.0 vendored** at `internal/render/vendor/d3.v7.min.js` and inlined
+  into every generated page, pinned by SHA256 (ADR-0001). This supersedes part
+  of design §10 — "all CSS/JS inline" now admits one vendored third-party
+  library — while keeping the part that matters: the page still makes no
+  external requests and renders from disk. A generated atlas grows from ~13KB to
+  ~302KB (measured on the committed fixture). `go.mod` is unchanged; D3 is an
+  embedded asset, not a Go dependency.
+
+- **`docs/adr/`** — architecture decision records for decisions that supersede
+  `docs/design.md`. ADR-0001 is the first.
+
 - **`atlas` CLI.** Renders a company's published AI primitives into a browsable
   static site:
 

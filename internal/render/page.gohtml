@@ -216,6 +216,52 @@ details ul.prims li { break-inside: avoid; }
   border: 1px solid var(--border); border-radius: 6px;
 }
 .empty button:hover { color: var(--text); }
+/* Radial view (ADR-0001). Colours come from the existing custom properties so
+   the map inherits dark mode with no second palette to keep in sync. The four
+   state colours are the same ones the cards use: a node and its card must not
+   disagree about what Atlas knows. */
+.radial { margin-top: 2rem; }
+#radial-canvas {
+  position: relative; width: 100%; height: 560px; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+}
+#radial-canvas svg { display: block; width: 100%; height: 100%; cursor: grab; }
+#radial-canvas svg:active { cursor: grabbing; }
+.radial-legend { display: flex; flex-wrap: wrap; gap: .25rem 1rem; align-items: center; margin-top: .6rem; }
+.radial-legend .dot {
+  display: inline-block; width: .6rem; height: .6rem; border-radius: 50%;
+  margin-right: .3rem; vertical-align: middle; background: var(--muted);
+}
+.radial-legend .dot.harvested { background: var(--accent); }
+.radial-legend .dot.restricted { background: var(--muted); }
+.radial-legend .dot.excluded { background: var(--warn-border); }
+.radial-legend .dot.unavailable { background: var(--muted); opacity: .45; }
+.rad-link { fill: none; stroke: var(--border); stroke-width: 1.1px; }
+.rad-node { cursor: pointer; }
+.rad-node circle { stroke: var(--surface); stroke-width: 1.5px; }
+.rad-node text {
+  font: 10px ui-sans-serif, system-ui, sans-serif; fill: var(--text);
+  paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round;
+}
+/* Degraded nodes are dashed as well as coloured: colour alone would fail a
+   reader with colour-vision deficiency, and this distinction is the one §7
+   requires stay legible. */
+.rad-node.state-restricted circle,
+.rad-node.state-unavailable circle { stroke-dasharray: 2 2; stroke: var(--muted); }
+.rad-node.state-excluded circle { stroke-dasharray: 2 2; stroke: var(--warn-border); }
+.rad-node.dim { opacity: .18; }
+#radial-tip {
+  position: absolute; pointer-events: none; max-width: 22rem; z-index: 5;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 5px;
+  padding: .45rem .6rem; font-size: .8rem; box-shadow: 0 2px 10px rgba(0,0,0,.12);
+}
+#radial-tip[hidden] { display: none; }
+#radial-tip .t-name { font-weight: 600; }
+#radial-tip .t-meta { color: var(--muted); font-size: .92em; margin-top: .15rem; }
+@media (prefers-reduced-motion: reduce) {
+  .rad-node, .rad-link { transition: none !important; }
+}
 </style>
 </head>
 <body>
@@ -305,6 +351,26 @@ details ul.prims li { break-inside: avoid; }
     {{ end }}
   </ul>
   </nav>
+
+  <!-- Radial view (ADR-0001).
+       Hidden until the script has drawn it: with JS off the container stays
+       empty, and the cards below remain the complete, readable page. The view
+       is additive and never the only place a primitive appears. -->
+  <div class="radial" id="radial" hidden>
+    <h2>Map</h2>
+    <p class="muted">
+      Every source and package, sized by how many primitives Atlas harvested.
+      A package Atlas was unable to read, or was told to withhold, is drawn with
+      its state rather than omitted. Click any package to jump to its card.
+    </p>
+    <div id="radial-canvas"></div>
+    <p class="muted radial-legend">
+      <span class="dot harvested"></span> harvested
+      <span class="dot restricted"></span> unreadable
+      <span class="dot excluded"></span> withheld
+      <span class="dot unavailable"></span> source unavailable
+    </p>
+  </div>
 
   {{ range $src := .Sources }}
   <section class="src">
@@ -620,6 +686,185 @@ details ul.prims li { break-inside: avoid; }
     var initial = new URL(location.href).searchParams.get('q');
     if (initial) { q.value = initial; filter(); }
   } catch (e) { /* no URL support: the page is simply unfiltered. */ }
+})();
+</script>
+
+<!-- D3 v7.9.0, vendored (ADR-0001). Inlined rather than fetched so the page
+     stays self-contained per §10: it renders from disk, from a commit, or from
+     a host with no egress. ISC-licensed; the copyright banner below is part of
+     the licence terms and must not be stripped. -->
+<script>{{ .D3 }}</script>
+
+<script id="radial-data" type="application/json">{{ .TreeJSON }}</script>
+
+<script>
+/* Radial view (ADR-0001).
+   Reads the hierarchy from the JSON block above and draws it with D3. Every
+   value it renders was computed in Go (internal/render/tree.go); this script
+   derives no state and infers nothing, so the picture cannot claim more than
+   atlas.json does.
+   All harvested text reaches the DOM via textContent — never as markup, the
+   same guard the filter script keeps, and the reason no second escaping layer
+   is needed here. */
+(function () {
+  var host = document.getElementById('radial');
+  var canvas = document.getElementById('radial-canvas');
+  var raw = document.getElementById('radial-data');
+  if (!host || !canvas || !raw || typeof d3 === 'undefined') return;
+
+  var data;
+  try { data = JSON.parse(raw.textContent); } catch (e) { return; }
+  /* A single-node tree (no sources at all) has nothing to draw; leaving the
+     section hidden is more honest than an empty circle. */
+  if (!data || !data.children || !data.children.length) return;
+
+  host.hidden = false;
+
+  var W = canvas.clientWidth || 900;
+  var H = canvas.clientHeight || 560;
+  var radius = Math.min(W, H) / 2 - 60;
+
+  var svg = d3.select(canvas).append('svg')
+      .attr('viewBox', [-W / 2, -H / 2, W, H])
+      .attr('role', 'img')
+      .attr('aria-label', 'Radial map of sources, packages and primitives. The same information is listed as text below.');
+
+  var g = svg.append('g');
+
+  svg.call(d3.zoom().scaleExtent([0.4, 6]).on('zoom', function (event) {
+    g.attr('transform', event.transform);
+  }));
+
+  var root = d3.hierarchy(data);
+  d3.tree().size([2 * Math.PI, radius])
+      .separation(function (a, b) { return (a.parent === b.parent ? 1 : 2) / a.depth; })(root);
+
+  g.append('g').selectAll('path').data(root.links()).join('path')
+      .attr('class', 'rad-link')
+      .attr('d', d3.linkRadial().angle(function (d) { return d.x; }).radius(function (d) { return d.y; }));
+
+  /* Radius encodes harvested primitive count — a number Atlas already
+     publishes in atlas.json. It is not usage, popularity or endorsement:
+     sizing by any of those would widen the claim (§9). */
+  function nodeRadius(d) {
+    if (d.data.kind === 'root') return 7;
+    if (d.data.kind === 'primitive') return 3;
+    var n = d.data.count || 0;
+    return Math.min(4 + Math.sqrt(n) * 2.2, 14);
+  }
+
+  function nodeFill(d) {
+    var s = d.data.state;
+    if (s === 'excluded') return 'var(--warn-border)';
+    if (s === 'restricted' || s === 'unavailable') return 'var(--muted)';
+    if (d.data.kind === 'primitive') return 'var(--muted)';
+    return 'var(--accent)';
+  }
+
+  var node = g.append('g').selectAll('g').data(root.descendants()).join('g')
+      .attr('class', function (d) {
+        return 'rad-node' + (d.data.state ? ' state-' + d.data.state : '');
+      })
+      .attr('transform', function (d) {
+        return 'rotate(' + (d.x * 180 / Math.PI - 90) + ') translate(' + d.y + ',0)';
+      });
+
+  node.append('circle')
+      .attr('r', nodeRadius)
+      .attr('fill', nodeFill)
+      .attr('fill-opacity', function (d) { return d.data.state === 'unavailable' ? 0.45 : 1; });
+
+  /* Labels on everything but primitives: at 70+ primitives the ring becomes
+     unreadable, and the name is one hover away. Sources and packages are the
+     level an operator navigates by. */
+  node.filter(function (d) { return d.data.kind !== 'primitive'; })
+      .append('text')
+      .attr('dy', '0.32em')
+      .attr('x', function (d) { return d.x < Math.PI === !d.children ? 8 : -8; })
+      .attr('text-anchor', function (d) { return d.x < Math.PI === !d.children ? 'start' : 'end'; })
+      .attr('transform', function (d) { return d.x >= Math.PI ? 'rotate(180)' : null; })
+      .text(function (d) { return d.data.name; });
+
+  var tip = document.createElement('div');
+  tip.id = 'radial-tip';
+  tip.hidden = true;
+  canvas.appendChild(tip);
+
+  /* Built with createElement plus textContent, never by assigning markup:
+     descriptions are third-party frontmatter, and this is the one place they
+     re-enter the DOM after html/template escaped them. */
+  function showTip(event, d) {
+    tip.replaceChildren();
+    var name = document.createElement('div');
+    name.className = 't-name';
+    name.textContent = d.data.name;
+    tip.appendChild(name);
+
+    var bits = [];
+    if (d.data.kind === 'primitive' && d.data.type) bits.push(d.data.type);
+    if (d.data.kind === 'package') {
+      if (d.data.state === 'public') bits.push((d.data.count || 0) + ' primitives');
+      else if (d.data.state === 'restricted') bits.push('Atlas could not read this package');
+      else if (d.data.state === 'excluded') bits.push('withheld by descriptor');
+    }
+    if (d.data.kind === 'source') {
+      bits.push(d.data.state === 'unavailable' ? 'source unavailable' : (d.data.count || 0) + ' primitives');
+    }
+    if (d.data.reason) bits.push(d.data.reason);
+    if (d.data.description) bits.push(d.data.description);
+
+    if (bits.length) {
+      var meta = document.createElement('div');
+      meta.className = 't-meta';
+      meta.textContent = bits.join(' · ');
+      tip.appendChild(meta);
+    }
+
+    tip.hidden = false;
+    var box = canvas.getBoundingClientRect();
+    var x = event.clientX - box.left + 14;
+    var y = event.clientY - box.top + 14;
+    /* Clamp on BOTH sides. Math.min alone assumes the tooltip fits: once
+       max-width (22rem) exceeds a narrow canvas, box.width - offsetWidth - 8
+       goes negative and the panel hangs off the left edge. Measured at a 360px
+       viewport: a 324px tooltip in a 320px canvas positioned at left:-6px.
+       Capping the width first keeps the second clamp meaningful. */
+    var maxW = Math.max(box.width - 16, 120);
+    tip.style.maxWidth = maxW + 'px';
+    tip.style.left = Math.max(0, Math.min(x, box.width - tip.offsetWidth - 8)) + 'px';
+    tip.style.top = Math.max(0, Math.min(y, box.height - tip.offsetHeight - 8)) + 'px';
+  }
+
+  node.on('mousemove', showTip)
+      .on('mouseleave', function () { tip.hidden = true; })
+      .on('click', function (event, d) {
+        /* Clicking a package jumps to the card that already carries the full
+           detail, so the map is a way into the page rather than a replacement
+           for it. */
+        if (d.data.cardId) {
+          var card = document.getElementById(d.data.cardId);
+          if (card) {
+            if (card.tagName === 'DETAILS') card.open = true;
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }
+      });
+
+  /* Hovering a source dims the other branches, which is how a large estate
+     stays readable. Implemented by ancestry test rather than by index so it
+     survives any future reordering. */
+  node.filter(function (d) { return d.data.kind === 'source'; })
+      .on('mouseenter', function (event, d) {
+        node.classed('dim', function (o) {
+          return !(o === d || o.ancestors().indexOf(d) >= 0 || d.ancestors().indexOf(o) >= 0);
+        });
+      })
+      /* Namespaced: d3's on() replaces any listener of the same type AND name,
+         and these source nodes already carry the unnamed mouseleave that hides
+         the tooltip. Without ".dim" this registration silently replaces it, and
+         a tooltip opened on a source stays stuck over the map — misattributing
+         one node's state to whatever it covers. */
+      .on('mouseleave.dim', function () { node.classed('dim', false); });
 })();
 </script>
 </body>

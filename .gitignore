@@ -2,6 +2,14 @@
 /dist/
 *.test
 
+# Browser-check leftovers. The radial view (ADR-0001) is verified by loading a
+# rendered page in a real browser, and the driver writes its snapshots and
+# screenshots here as a side effect. They are evidence from one run, not part
+# of the repo. Scoped to this directory deliberately: a broader pattern such as
+# /*.png would also swallow an image someone legitimately adds at the root, and
+# a file missing from git status is worse than one that has to be ignored.
+/.playwright-mcp/
+
 # Vendored SDLC pipeline skills and their per-ticket working files.
 # The skills are vendored from another repo, so this repo is not their source of
 # truth: tracking them would ship ~1k lines Atlas did not author under Atlas's
