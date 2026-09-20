@@ -1185,14 +1185,22 @@ func TestUnavailableSourceStubIsNotFilterable(t *testing.T) {
 
 	// Locate the unavailable source's section and confirm its stub card has
 	// no id, keeping it outside the filter's .card[id] set.
-	i := strings.Index(s, "could not be")
+	//
+	// Anchored forwards from the first source section rather than backwards
+	// from the stub's copy. The page carries prose before the sections (the
+	// radial legend, ADR-0001), so a backwards search from the first match of
+	// a phrase would silently start outside any section the moment that phrase
+	// appeared earlier — failing a §7 test with a message pointing at the
+	// template instead of at the copy that moved.
+	secStart := strings.Index(s, `<section class="src">`)
+	if secStart == -1 {
+		t.Fatal("no source section on the page")
+	}
+	i := strings.Index(s[secStart:], "could not be")
 	if i == -1 {
 		t.Fatal("the unavailable-source stub is missing from the page")
 	}
-	secStart := strings.LastIndex(s[:i], `<section class="src">`)
-	if secStart == -1 {
-		t.Fatal("the unavailable-source stub is not inside a source section")
-	}
+	i += secStart
 	secEnd := strings.Index(s[secStart:], "</section>")
 	if secEnd == -1 {
 		t.Fatal("unterminated source section")

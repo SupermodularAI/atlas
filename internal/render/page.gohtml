@@ -852,7 +852,12 @@ details ul.prims li { break-inside: avoid; }
           return !(o === d || o.ancestors().indexOf(d) >= 0 || d.ancestors().indexOf(o) >= 0);
         });
       })
-      .on('mouseleave', function () { node.classed('dim', false); });
+      /* Namespaced: d3's on() replaces any listener of the same type AND name,
+         and these source nodes already carry the unnamed mouseleave that hides
+         the tooltip. Without ".dim" this registration silently replaces it, and
+         a tooltip opened on a source stays stuck over the map — misattributing
+         one node's state to whatever it covers. */
+      .on('mouseleave.dim', function () { node.classed('dim', false); });
 })();
 </script>
 </body>

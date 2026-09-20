@@ -441,6 +441,32 @@ func TestRenderRealScalePageForBrowser(t *testing.T) {
 
 var scaleOut = flag.String("scale-out", "", "path to write the real-scale page (manual browser check)")
 
+// Source nodes carry two mouseleave listeners: one hides the tooltip, one
+// clears the dimming. d3's on() replaces any listener of the same type AND
+// name, so registering both unnamed silently dropped the tooltip-hider on
+// exactly those nodes — hover a source, move away, and a stale panel stayed
+// over the map, attributing one node's state to whatever it covered.
+//
+// Asserted as a property of the emitted script because the behaviour lives in
+// JavaScript that Go tests do not execute; browser verification caught it once,
+// and this keeps it caught.
+func TestDimHandlerDoesNotReplaceTooltipHandler(t *testing.T) {
+	html, err := Render(atlasWithDegradation())
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	s := atlasOwnScripts(t, string(html))
+
+	if strings.Count(s, "'mouseleave'") > 1 {
+		t.Error("more than one unnamed 'mouseleave' registration: d3's on() replaces by type+name, " +
+			"so the second silently removes the first on any node in both selections — namespace one of them")
+	}
+	if !strings.Contains(s, "'mouseleave.dim'") {
+		t.Error("the dim-clearing handler is not namespaced ('mouseleave.dim'); " +
+			"it will replace the tooltip-hiding handler on source nodes")
+	}
+}
+
 // d3BannerNotice is the upstream copyright line ISC requires to survive into
 // every copy. It doubles as the marker that locates the vendored block.
 const d3BannerNotice = "Copyright 2010-2023 Mike Bostock"
