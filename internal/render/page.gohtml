@@ -824,8 +824,15 @@ details ul.prims li { break-inside: avoid; }
     var box = canvas.getBoundingClientRect();
     var x = event.clientX - box.left + 14;
     var y = event.clientY - box.top + 14;
-    tip.style.left = Math.min(x, box.width - tip.offsetWidth - 8) + 'px';
-    tip.style.top = Math.min(y, box.height - tip.offsetHeight - 8) + 'px';
+    /* Clamp on BOTH sides. Math.min alone assumes the tooltip fits: once
+       max-width (22rem) exceeds a narrow canvas, box.width - offsetWidth - 8
+       goes negative and the panel hangs off the left edge. Measured at a 360px
+       viewport: a 324px tooltip in a 320px canvas positioned at left:-6px.
+       Capping the width first keeps the second clamp meaningful. */
+    var maxW = Math.max(box.width - 16, 120);
+    tip.style.maxWidth = maxW + 'px';
+    tip.style.left = Math.max(0, Math.min(x, box.width - tip.offsetWidth - 8)) + 'px';
+    tip.style.top = Math.max(0, Math.min(y, box.height - tip.offsetHeight - 8)) + 'px';
   }
 
   node.on('mousemove', showTip)
